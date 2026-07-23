@@ -4,8 +4,8 @@
               style="margin-bottom: 16px;">
       <template #title>此页面仅对管理员开放</template>
       <div>
-        你目前登录的是训练用户账号（<b>{{ trainUser?.username }}</b>），
-        没有管理员 token,无法访问训练端管理员后台。
+        你目前登录的是用户端账号（<b>{{ trainUser?.username }}</b>），
+        没有管理员 token,无法访问用户端的管理后台。
       </div>
       <div style="margin-top: 8px;">
         <el-button type="primary" size="small" @click="goAdminLogin">
@@ -349,15 +349,26 @@ const actionLogTotal = ref(0)
 const activeTab = ref('users')
 
 // 是否同时拥有 admin token(从管理后台登录拿到的)
+// 同时校验 Pinia store 和 localStorage,避免状态不同步
 function checkTokens() {
-  // 通过 auth store 检查: 这套前端管理后台的 token 放在 localStorage 的 stock_admin_token
-  const token = localStorage.getItem('stock_admin_token') || ''
+  const auth = useAuthStore()
+  const storeToken = auth.token || ''
+  const lsToken = localStorage.getItem('stock_admin_token') || ''
+  // 任一来源存在即认为已登录管理员
+  const token = storeToken || lsToken
   if (!token) {
     hasAdminToken.value = false
     trainUser.value = JSON.parse(localStorage.getItem('stock_train_user') || 'null')
     return
   }
   hasAdminToken.value = true
+  // 把 localStorage 的 token 同步回 store(防止另一处清掉 store 但 localStorage 还有)
+  if (!storeToken && lsToken) {
+    try {
+      const u = JSON.parse(localStorage.getItem('stock_admin_user') || 'null')
+      auth.setAuth(lsToken, u || { username: 'admin' })
+    } catch {}
+  }
   try {
     const u = JSON.parse(localStorage.getItem('stock_admin_user') || 'null')
     adminWho.value = u?.username || 'admin'
@@ -365,10 +376,8 @@ function checkTokens() {
 }
 
 function goAdminLogin() {
-  // 打开管理后台,引导登录
-  window.location.hash = '#/login'
-  window.location.pathname = window.location.pathname.replace(/\/(\?.*)?$/, '/$1')
-  location.reload()
+  // 用 router.push 让路由守卫走标准流程(避免直接改 hash 绕过守卫)
+  router.push('/admin/login')
 }
 
 function goBackHome() {

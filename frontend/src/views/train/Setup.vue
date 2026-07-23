@@ -316,8 +316,9 @@ onMounted(loadOptions)
 </script>
 
 <style scoped>
-.muted { color: #b4bcd0; }
-.hint { margin-left: 8px; color: #909399; font-size: 12px; }
-.page-card { background: #fff; padding: 18px 24px; border-radius: 6px; }
+.muted { color: var(--text-secondary); }
+.hint { margin-left: var(--space-sm); color: var(--text-secondary); font-size: var(--text-xs); }
+.page-card { background: var(--bg-card); padding: var(--space-2xl); border-radius: var(--radius-lg);
+             border: 1px solid var(--border-color-light); }
 .page-card h3 { margin-top: 0; }
 </style>

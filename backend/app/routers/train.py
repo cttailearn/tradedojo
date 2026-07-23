@@ -148,23 +148,29 @@ def _session_for_user(user_id: int, session_id: int) -> dict:
     return dict(zip(SESSION_COLS, row))
 
 
-def _realized_pnl_for_buy(user_id: int, session_id: int, sell_qty: int) -> tuple[float, float]:
-    """FIFO 计算本次卖出对应的成本(按所有 BUY 订单);返回 (cost_basis)"""
+def _fifo_cost_basis(user_id: int, session_id: int, sell_qty: int) -> tuple[float, float]:
+    """FIFO 计算本次卖出对应的成本基础(从所有 BUY 订单按时间顺序消耗);
+    返回 (cost_basis, fee_proportion)
+    """
     rows = query_all(
-        "SELECT id, quantity, price, commission FROM training_order "
+        "SELECT id, quantity, price, commission, stamp_tax, transfer_fee, total_fee "
+        "FROM training_order "
         "WHERE user_id = ? AND session_id = ? AND side = 'BUY' "
         "ORDER BY trade_date ASC, id ASC",
         (user_id, session_id),
     )
-    cost = 0.0
+    cost_basis = 0.0
+    fee_proportion = 0.0  # 卖出时按卖股数 / 原始买股数 比例分摊买入费用
     remaining = sell_qty
-    for _id, qty, price, fee in rows:
+    for _id, qty, price, commission, stamp_tax, transfer_fee, total_fee in rows:
         if remaining <= 0:
             break
         take = min(qty, remaining)
-        cost += take * price + (fee or 0) * take / max(qty, 1)
+        cost_basis += take * price
+        # 按比例分摊买入时的手续费(影响实现盈亏的精确度)
+        fee_proportion += (total_fee or 0) * (take / qty)
         remaining -= take
-    return cost, 0.0
+    return cost_basis, fee_proportion
 
 
 def _calc_total_fees(amount: float, qty: int, session: dict, side: str) -> dict:
@@ -323,24 +329,47 @@ def list_my_sessions(user: dict = Depends(get_current_train_user)):
 @router.post("/sessions/start")
 def start_session(req: TrainingSetupRequest, user: dict = Depends(get_current_train_user)):
     """发起一场训练:消费钱包余额、随机选股、写入 session"""
-    # 1. 计算本次会话需消耗的训练资金(按 initial_cash 的 1% 起步, 越大约便宜, 上限 50 元)
-    session_cost = min(max(req.initial_cash * 0.01, 5), 50)
+    # 1. 计算本次会话需消耗的训练资金(阶梯式)
+    #   - 起步价 5 元
+    #   - 训练天数越长越贵,每自然日 0.05 元(包含周末/节假日)
+    #   - 初始资金越大越贵,每 100 万 +20 元(上限 +60 元)
+    #   - 总上限 80 元,下限 5 元
+    try:
+        from datetime import datetime as _dt
+        span_days = max(1, (_dt.strptime(req.end_date, "%Y-%m-%d") - _dt.strptime(req.start_date, "%Y-%m-%d")).days)
+    except Exception:
+        span_days = 30
+    cash_factor = min(60.0, (req.initial_cash / 1_000_000.0) * 20.0)
+    session_cost = min(80.0, max(5.0, 5.0 + span_days * 0.05 + cash_factor))
 
     with get_conn() as conn:
-        # 扣费 + 选股(事务)
+        # 原子化扣费: UPDATE WHERE balance >= ? 看 rowcount
+        # 避免并发扣减导致超额
         cur = conn.execute(
+            "UPDATE training_wallet SET balance = balance - ?, "
+            "total_spent = total_spent + ?, "
+            "updated_at = datetime('now','localtime') "
+            "WHERE user_id = ? AND balance >= ?",
+            (session_cost, session_cost, user["id"], session_cost),
+        )
+        if cur.rowcount == 0:
+            # 余额不足或钱包不存在
+            row = conn.execute(
+                "SELECT balance FROM training_wallet WHERE user_id = ?",
+                (user["id"],),
+            ).fetchone()
+            cur_bal = float(row[0] or 0) if row else 0.0
+            raise HTTPException(
+                status_code=402,
+                detail=f"训练资金不足,本次需要 {session_cost:.2f} 元,当前余额 {cur_bal:.2f} 元",
+            )
+
+        # 重新读取扣后余额(用于返回)
+        balance_row = conn.execute(
             "SELECT balance FROM training_wallet WHERE user_id = ?",
             (user["id"],),
         ).fetchone()
-        balance = float(cur[0] or 0) if cur else 0.0
-        if balance < session_cost:
-            raise HTTPException(status_code=402, detail=f"训练资金不足,本次需要 {session_cost:.2f} 元")
-        conn.execute(
-            "UPDATE training_wallet SET balance = balance - ?, "
-            "total_spent = total_spent + ?, "
-            "updated_at = datetime('now', 'localtime') WHERE user_id = ?",
-            (session_cost, session_cost, user["id"]),
-        )
+        balance_after = float(balance_row[0] or 0)
 
         # 随机选股
         req_sub = TrainingSetupRequest(**req.model_dump())
@@ -380,7 +409,7 @@ def start_session(req: TrainingSetupRequest, user: dict = Depends(get_current_tr
     session = dict(zip(SESSION_COLS, row))
     view = _build_session_view(session)
     view["session_cost"] = session_cost
-    view["wallet_balance_after"] = balance - session_cost
+    view["wallet_balance_after"] = balance_after
     return view
 
 
@@ -627,8 +656,11 @@ def trade(session_id: int, req: TradeOrderRequest, user: dict = Depends(get_curr
                 raise HTTPException(status_code=400, detail="可卖股数不足")
             trade_amount = qty * price
             fees = _calc_total_fees(trade_amount, qty, sess, "SELL")
-            cost_basis = (row[1] or 0) * qty
-            realized_pnl = trade_amount - fees["total_fee"] - cost_basis
+            # FIFO 真实实现盈亏: 卖出价 - 买入成本 - 卖出手续费 - 分摊的买入费用
+            cost_basis, fee_proportion = _fifo_cost_basis(
+                user["id"], sess["id"], qty
+            )
+            realized_pnl = trade_amount - fees["total_fee"] - cost_basis - fee_proportion
 
             cur = conn.execute(
                 """INSERT INTO training_order(
@@ -638,7 +670,7 @@ def trade(session_id: int, req: TradeOrderRequest, user: dict = Depends(get_curr
                 (sess["id"], user["id"], current_dt,
                  price, qty, trade_amount,
                  fees["commission"], fees["stamp_tax"], fees["transfer_fee"],
-                 fees["total_fee"], realized_pnl),
+                 fees["total_fee"], round(realized_pnl, 2)),
             )
             order_id = cur.lastrowid
 
@@ -665,9 +697,20 @@ def trade(session_id: int, req: TradeOrderRequest, user: dict = Depends(get_curr
 @router.post("/sessions/{session_id}/finish")
 def finish(session_id: int, user: dict = Depends(get_current_train_user)):
     """主动结束训练(返回当前权益曲线)"""
-    execute(
+    cur = execute(
         "UPDATE training_session SET status='finished', updated_at=datetime('now','localtime') "
-        "WHERE id = ? AND user_id = ?",
+        "WHERE id = ? AND user_id = ? AND status='active'",
         (session_id, user["id"]),
     )
+    # execute 是用普通连接, 返回的是 sqlite3.Cursor, 检查 rowcount
+    affected = getattr(cur, "rowcount", 0) or 0
+    if affected == 0:
+        # 区分: 是状态已结束还是 session 不存在
+        row = query_one(
+            "SELECT status FROM training_session WHERE id = ? AND user_id = ?",
+            (session_id, user["id"]),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="训练会话不存在")
+        # 已经是 finished 了 — 幂等返回当前视图
     return get_session(session_id, user=user)

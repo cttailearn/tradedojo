@@ -10,16 +10,11 @@
           mode="horizontal"
           :default-active="activeMenu"
           :ellipsis="false"
-          background-color="transparent"
-          active-text-color="#409EFF"
-          text-color="#e6e8eb"
           router
         >
           <el-menu-item index="/train/home">训练首页</el-menu-item>
           <el-menu-item index="/train/setup">发起训练</el-menu-item>
           <el-menu-item index="/train/wallet">钱包 / 兑换</el-menu-item>
-          <el-menu-item index="/train/redeem-admin">兑换码生成</el-menu-item>
-          <el-menu-item index="/train/admin">用户/资金管理</el-menu-item>
         </el-menu>
       </div>
       <div class="user-box">
@@ -53,9 +48,6 @@
 
     <el-footer class="train-footer" height="36px">
       <span>© 2026 Stock Data System · 用户训练端</span>
-      <span style="margin-left:auto;">
-        <el-link type="info" href="#/dashboard" target="_self">切换到管理后台</el-link>
-      </span>
     </el-footer>
   </el-container>
 </template>
@@ -88,7 +80,7 @@ async function onCommand(cmd) {
   if (cmd === 'logout') {
     auth.clear()
     ElMessage.success('已退出')
-    router.replace('/train/login')
+    router.replace('/')
   }
 }
 
@@ -106,7 +98,7 @@ onMounted(async () => {
     Object.assign(wallet, me?.wallet || {})
   } catch {
     auth.clear()
-    router.push('/train/login')
+    router.push('/')
   }
 })
 
@@ -118,42 +110,63 @@ defineExpose({ refreshWallet })
 .train-layout {
   min-height: 100vh;
   flex-direction: column;
-  background: #0f1622;
+  background: var(--bg-page);
 }
 .train-header {
   display: flex;
   align-items: center;
-  height: 60px;
-  background: #14202e;
-  border-bottom: 1px solid #1f2d3d;
-  padding: 0 24px;
+  height: var(--header-height);
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border-color-light);
+  padding: 0 var(--space-2xl);
+  box-shadow: var(--shadow-xs);
 }
 .brand {
   display: flex;
   align-items: center;
   cursor: pointer;
-  margin-right: 32px;
+  margin-right: var(--space-3xl);
+  gap: var(--space-sm);
 }
-.brand .logo { font-size: 24px; margin-right: 8px; }
-.brand .name { color: #f3f3f3; font-size: 16px; font-weight: bold; }
+.brand .logo {
+  width: 32px; height: 32px;
+  background: var(--color-primary);
+  border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; color: #fff;
+}
+.brand .name {
+  color: var(--text-primary); font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.01em;
+}
 .nav { flex: 1; }
-.nav :deep(.el-menu) { border-bottom: none; }
-.user-box { display: flex; align-items: center; gap: 12px; }
-.user-info {
-  display: flex; align-items: center; gap: 6px;
-  color: #e6e8eb; cursor: pointer;
+.nav :deep(.el-menu) {
+  border-bottom: none;
+  background: transparent;
 }
+.nav :deep(.el-menu-item) { font-size: var(--text-base); }
+.user-box { display: flex; align-items: center; gap: var(--space-md); }
+.user-info {
+  display: flex; align-items: center; gap: var(--space-sm);
+  color: var(--text-regular); cursor: pointer;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  transition: all var(--transition-fast);
+}
+.user-info:hover { background: var(--bg-hover); }
 .train-main {
-  padding: 20px;
-  max-width: 1400px;
+  padding: var(--space-2xl);
+  max-width: var(--content-max-width);
   margin: 0 auto;
   width: 100%;
 }
 .train-footer {
   display: flex; align-items: center;
-  background: #14202e; color: #8a99ad;
-  border-top: 1px solid #1f2d3d;
-  padding: 0 24px; font-size: 12px;
+  background: var(--bg-header); color: var(--text-secondary);
+  border-top: 1px solid var(--border-color-light);
+  padding: 0 var(--space-2xl); font-size: var(--text-xs);
 }
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.15s; }

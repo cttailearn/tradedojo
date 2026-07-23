@@ -7,8 +7,9 @@
  * 拦截器自动统一:成功时返回实际 data,失败时抛 Error
  *
  * Token 策略:
- *   - 当请求 URL 含 /train/ 时,使用训练端 token
- *   - 否则使用管理端 token
+ *   - 当请求 URL 含 /train/admin/ 时,使用管理端 token (管理员操作用户端数据)
+ *   - 当请求 URL 含 /train/ 时,使用用户端 token (普通用户业务)
+ *   - 其他情况使用管理端 token (默认)
  */
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
@@ -58,19 +59,32 @@ api.interceptors.response.use(
     const status = err.response?.status
     const url = err.config?.url || ''
     if (status === 401) {
-      if (url.includes('/train/')) {
+      // 判断依据:哪一类 token 应该出现在该请求里,401 就跳到对应登录页
+      //   /train/admin/* —— 应该带管理端 token  →  跳管理端登录页
+      //   /train/*       —— 应该带用户端 token  →  跳用户端登录页
+      //   其他           —— 默认管理端 token    →  跳管理端登录页
+      if (url.includes('/train/admin/')) {
+        // 管理端 token 过期/失效
+        const auth = useAuthStore()
+        auth.clear()
+        if (router.currentRoute.value.path !== '/admin/login') {
+          ElMessage.error('管理员登录已过期,请重新登录')
+          router.push('/admin/login')
+        }
+      } else if (url.includes('/train/')) {
+        // 用户端 token 过期/失效
         const t = useTrainAuthStore()
         t.clear()
-        if (router.currentRoute.value.path !== '/train/login') {
-          ElMessage.error('训练端登录已过期,请重新登录')
-          router.push('/train/login')
+        if (router.currentRoute.value.path !== '/') {
+          ElMessage.error('用户端登录已过期,请重新登录')
+          router.push('/')
         }
       } else {
         const auth = useAuthStore()
         auth.clear()
-        if (router.currentRoute.value.path !== '/login') {
-          ElMessage.error('登录已过期,请重新登录')
-          router.push('/login')
+        if (router.currentRoute.value.path !== '/admin/login') {
+          ElMessage.error('管理员登录已过期,请重新登录')
+          router.push('/admin/login')
         }
       }
       return Promise.reject(new Error('登录已过期'))

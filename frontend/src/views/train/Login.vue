@@ -63,9 +63,7 @@
     </div>
 
     <div class="footer">
-      <el-link href="#/dashboard" type="info">前往管理后台</el-link>
-      <span style="margin: 0 12px;">·</span>
-      <el-link href="#/login" type="info">管理员登录</el-link>
+      用户训练端 · 仅供训练使用
     </div>
   </div>
 </template>
@@ -112,7 +110,10 @@ async function onRegister() {
   if (form.username.length < 3 || form.username.length > 32) {
     return ElMessage.warning('账号长度需 3-32 位')
   }
-  if (form.password.length < 6) return ElMessage.warning('密码长度至少 6 位')
+  if (form.password.length < 8) return ElMessage.warning('密码长度至少 8 位')
+  if (!/[a-zA-Z]/.test(form.password) || !/\d/.test(form.password)) {
+    return ElMessage.warning('密码必须包含字母和数字')
+  }
   loading.value = true
   try {
     await trainApi.register(form.username.trim(), form.password, form.display_name || '')
@@ -131,26 +132,58 @@ async function onRegister() {
 .train-login-bg {
   min-height: 100vh;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, #0f1622 0%, #1a2b46 100%);
+  background: var(--bg-page);
+}
+.train-login-bg::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-info) 100%);
+  z-index: var(--z-sticky);
 }
 .login-card {
   display: flex; width: 880px; max-width: 92vw;
-  border-radius: 14px; overflow: hidden;
-  box-shadow: 0 24px 48px rgba(0,0,0,.4);
+  border-radius: var(--radius-xl); overflow: hidden;
+  box-shadow: var(--shadow-xl);
+  border: 1px solid var(--border-color-light);
 }
 .left {
-  flex: 1; padding: 48px 36px;
-  background: linear-gradient(160deg, #1f3b66, #0f1d33);
-  color: #f3f3f3;
+  flex: 1; padding: var(--space-5xl) var(--space-3xl);
+  background: linear-gradient(160deg, #1e3a5f, #0f2342);
+  color: #f1f5f9;
 }
-.left h1 { margin: 0 0 8px; font-size: 28px; }
-.left .sub { color: #b4bcd0; margin: 0 0 36px; }
-.features { padding-left: 20px; line-height: 1.9; color: #d8dde6; }
+.left h1 {
+  margin: 0 0 var(--space-sm);
+  font-size: var(--text-4xl);
+  font-weight: var(--font-bold);
+  letter-spacing: -0.02em;
+}
+.left .sub {
+  color: #94a3b8;
+  font-size: var(--text-base);
+  margin: 0 0 var(--space-4xl);
+}
+.features {
+  padding: 0;
+  list-style: none;
+  display: flex; flex-direction: column; gap: var(--space-lg);
+}
+.features li {
+  display: flex; align-items: center; gap: var(--space-sm);
+  color: #cbd5e1;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
 .right {
-  width: 420px; padding: 36px 32px;
-  background: #fff;
+  width: 420px; padding: var(--space-4xl) var(--space-2xl);
+  background: var(--bg-card);
 }
 .btn { width: 100%; }
-.tip { font-size: 12px; color: #909399; margin-top: 12px; text-align: center; }
-.footer { color: #b4bcd0; margin-top: 22px; font-size: 13px; }
+.tip { font-size: var(--text-xs); color: var(--text-placeholder); margin-top: var(--space-md); text-align: center; }
+.footer {
+  color: var(--text-placeholder); margin-top: var(--space-2xl);
+  font-size: var(--text-sm);
+  display: flex; align-items: center;
+}
 </style>

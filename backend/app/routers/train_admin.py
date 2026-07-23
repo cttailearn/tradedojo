@@ -186,6 +186,21 @@ def set_user_active(
 
     execute("UPDATE training_user SET is_active = ? WHERE id = ?",
              (after_active, user_id))
+    # 停用用户时, 同时下线该用户的全部 token
+    if after_active == 0:
+        try:
+            execute(
+                "CREATE TABLE IF NOT EXISTS train_token("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  user_id INTEGER NOT NULL,"
+                "  token TEXT UNIQUE NOT NULL,"
+                "  expires_at TEXT NOT NULL,"
+                "  created_at TEXT DEFAULT (datetime('now', 'localtime'))"
+                ")"
+            )
+            execute("DELETE FROM train_token WHERE user_id = ?", (user_id,))
+        except Exception:
+            pass
 
     _log_action(
         actor=user["username"],
@@ -215,11 +230,25 @@ def reset_user_password(
     )
     if not row:
         raise HTTPException(404, "用户不存在")
-    h, salt = _hash_pw(payload.new_password)
+    h = _hash_pw(payload.new_password)
     execute(
-        "UPDATE training_user SET password_hash = ?, salt = ? WHERE id = ?",
-        (h, salt, user_id),
+        "UPDATE training_user SET password_hash = ?, salt = '' WHERE id = ?",
+        (h, user_id),
     )
+    # 强制下线该用户的所有 session (train_token)
+    try:
+        execute(
+            "CREATE TABLE IF NOT EXISTS train_token("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  user_id INTEGER NOT NULL,"
+            "  token TEXT UNIQUE NOT NULL,"
+            "  expires_at TEXT NOT NULL,"
+            "  created_at TEXT DEFAULT (datetime('now', 'localtime'))"
+            ")"
+        )
+        execute("DELETE FROM train_token WHERE user_id = ?", (user_id,))
+    except Exception:
+        pass
     _log_action(
         actor=user["username"],
         action="reset_user_password",

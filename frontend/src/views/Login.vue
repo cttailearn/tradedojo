@@ -3,7 +3,7 @@
     <div class="login-box">
       <div class="login-header">
         <div class="logo">📈</div>
-        <h1>股票数据库管理系统</h1>
+        <h1>管理后台</h1>
         <p class="subtitle">A 股数据采集 · 回测 · 智能管理</p>
       </div>
       <el-form
@@ -31,19 +31,35 @@
           </el-input>
         </el-form-item>
         <el-button type="primary" size="large" :loading="loading" class="login-btn" @click="onLogin">
-          登 录
-        </el-button>
-      </el-form>
-      <div class="login-tip">
-        默认账号:<code>admin</code> / <code>admin123</code>
-      </div>
+        登 录
+      </el-button>
+    </el-form>
+    <!--
+      默认账号提示: 仅在开发者模式下显示 (通过 URL 加 ?dev=1 启用).
+      普通用户访问 /admin/login 时看不到, 管理员自己知道默认值.
+    -->
+    <div v-if="showDevHint" class="login-tip">
+      默认管理员账号: <code>{{ devUsername }}</code> / <code>{{ devPassword }}</code>
+      <br />
+      <small>(提示来自 URL <code>?dev=1</code>, 仅开发环境)</small>
     </div>
-    <div class="login-footer">© 2026 Stock Data System · Powered by FastAPI + Vue 3</div>
+  </div>
+    <div class="login-footer">
+      © 2026 Stock Data System · Powered by FastAPI + Vue 3
+      <el-link
+        v-if="!showDevHint"
+        type="info"
+        :underline="false"
+        style="margin-left: 12px; font-size: 12px;"
+        @click="enableDevHint"
+        title="显示默认管理员账号提示"
+      >·</el-link>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { authApi } from '@/api/modules'
@@ -55,10 +71,19 @@ const auth = useAuthStore()
 
 const formRef = ref(null)
 const loading = ref(false)
-const form = reactive({ username: 'admin', password: 'admin123' })
+const form = reactive({ username: '', password: '' })
 const rules = {
   username: [{ required: true, message: '请输入账号', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+}
+
+// 开发者提示: 仅当 URL 带 ?dev=1 时显示
+const showDevHint = computed(() => route.query.dev === '1')
+const devUsername = 'admin'
+const devPassword = 'admin123'
+
+function enableDevHint() {
+  router.replace({ query: { ...route.query, dev: '1' } })
 }
 
 async function onLogin() {
@@ -79,7 +104,7 @@ async function onLogin() {
       user_id: payload.user_id,
     })
     ElMessage.success(`欢迎回来,${username}`)
-    const redirect = route.query.redirect || '/dashboard'
+    const redirect = route.query.redirect || '/admin/dashboard'
     // 用 replace 避免登录页可以 back 返回
     router.replace(redirect)
   } catch (e) {

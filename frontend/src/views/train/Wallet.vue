@@ -120,20 +120,20 @@ onMounted(load)
 </script>
 
 <style scoped>
-.big { padding: 20px; border-radius: 6px; }
-.balance { background: linear-gradient(135deg, #1f3b66, #0f1d33); color: #fff;
+.big { padding: var(--space-xl); border-radius: var(--radius-sm); }
+.balance { background: linear-gradient(135deg, #1e3a5f, #0f2342); color: #fff;
            position: relative; overflow: hidden; }
 .balance::before {
   content: ''; position: absolute; right: -40px; top: -40px;
   width: 160px; height: 160px; border-radius: 50%;
   background: rgba(64, 158, 255, 0.15);
 }
-.balance .lbl, .balance .lbl-hint { color: #b4bcd0; }
-.balance .val { color: #67c23a; font-size: 32px; margin-top: 8px; }
-.muted { background: #f6f8fb; }
-.muted .lbl { color: #909399; font-size: 12px; }
-.muted .val { color: #303133; font-size: 28px; font-weight: bold; margin-top: 6px; }
-.page-card { background: #fff; padding: 18px 22px; border-radius: 6px;
-             box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+.balance .lbl, .balance .lbl-hint { color: rgba(255,255,255,0.6); }
+.balance .val { color: var(--color-success); font-size: var(--text-3xl); margin-top: var(--space-sm); }
+.muted { background: var(--bg-muted); }
+.muted .lbl { color: var(--text-secondary); font-size: var(--text-xs); }
+.muted .val { color: var(--text-primary); font-size: var(--text-2xl); font-weight: var(--font-bold); margin-top: var(--space-xs); }
+.page-card { background: var(--bg-card); padding: var(--space-2xl); border-radius: var(--radius-lg);
+             border: 1px solid var(--border-color-light); }
 .page-card h3 { margin-top: 0; }
 </style>

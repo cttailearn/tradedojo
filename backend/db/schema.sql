@@ -190,6 +190,7 @@ CREATE TABLE IF NOT EXISTS training_position (
     PRIMARY KEY (session_id, code)
 );
 CREATE INDEX IF NOT EXISTS idx_position_user ON training_position(user_id);
+CREATE INDEX IF NOT EXISTS idx_position_user_code ON training_position(user_id, code);
 
 -- 账户"权益曲线"快照,便于复盘 + 资金盈亏曲线
 CREATE TABLE IF NOT EXISTS training_equity (
@@ -221,3 +222,5 @@ CREATE TABLE IF NOT EXISTS admin_action_log (
 );
 CREATE INDEX IF NOT EXISTS idx_action_log_actor ON admin_action_log(actor, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_action_log_target ON admin_action_log(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_action_log_action ON admin_action_log(action);
+CREATE INDEX IF NOT EXISTS idx_action_log_created ON admin_action_log(created_at DESC);

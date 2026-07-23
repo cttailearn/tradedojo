@@ -57,6 +57,9 @@
                   @click="finish" :disabled="session?.status === 'finished'">
           <el-icon><CircleClose /></el-icon>{{ session?.status === 'finished' ? '已结束' : '结束训练' }}
         </el-button>
+        <el-button type="info" plain size="small" @click="$router.push(`/train/report/${sessionId}`)">
+          <el-icon><Document /></el-icon>诊断报告
+        </el-button>
       </div>
     </div>
 

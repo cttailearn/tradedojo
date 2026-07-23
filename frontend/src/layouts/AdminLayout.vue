@@ -4,53 +4,58 @@
     <el-aside :width="collapsed ? '64px' : '220px'" class="sidebar">
       <div class="logo-area">
         <span class="logo-icon">📈</span>
-        <span v-show="!collapsed" class="logo-text">股票数据管理</span>
+        <span v-show="!collapsed" class="logo-text">管理后台</span>
       </div>
       <el-menu
         :default-active="activeMenu"
         :collapse="collapsed"
         :collapse-transition="false"
-        background-color="#1f2d3d"
-        text-color="#bfcbd9"
-        active-text-color="#409EFF"
         router
         class="sidebar-menu"
       >
-        <el-menu-item index="/dashboard">
+        <el-menu-item index="/admin/dashboard">
           <el-icon><Odometer /></el-icon>
           <template #title>仪表盘</template>
         </el-menu-item>
-        <el-menu-item index="/stocks">
+        <el-menu-item index="/admin/stocks">
           <el-icon><Box /></el-icon>
           <template #title>股票管理</template>
         </el-menu-item>
-        <el-menu-item index="/kline">
+        <el-menu-item index="/admin/kline">
           <el-icon><DataLine /></el-icon>
           <template #title>K线查询</template>
         </el-menu-item>
-        <el-menu-item index="/tasks">
+        <el-menu-item index="/admin/tasks">
           <el-icon><Download /></el-icon>
           <template #title>数据更新</template>
         </el-menu-item>
-        <el-menu-item index="/scheduler">
+        <el-menu-item index="/admin/scheduler">
           <el-icon><AlarmClock /></el-icon>
           <template #title>定时调度</template>
         </el-menu-item>
-        <el-menu-item index="/backtest">
+        <el-menu-item index="/admin/backtest">
           <el-icon><TrendCharts /></el-icon>
           <template #title>回测中心</template>
         </el-menu-item>
-        <el-menu-item index="/sources">
+        <el-menu-item index="/admin/strategies">
+          <el-icon><EditPen /></el-icon>
+          <template #title>策略编辑器</template>
+        </el-menu-item>
+        <el-menu-item index="/admin/sources">
           <el-icon><Coin /></el-icon>
           <template #title>数据源</template>
         </el-menu-item>
-        <el-menu-item index="/kronos">
-          <el-icon><MagicStick /></el-icon>
-          <template #title>AI 预测</template>
-        </el-menu-item>
-        <el-menu-item index="/system">
+        <el-menu-item index="/admin/system">
           <el-icon><Setting /></el-icon>
           <template #title>系统状态</template>
+        </el-menu-item>
+        <el-menu-item index="/admin/train-users">
+          <el-icon><User /></el-icon>
+          <template #title>训练用户管理</template>
+        </el-menu-item>
+        <el-menu-item index="/admin/train-redeem">
+          <el-icon><Ticket /></el-icon>
+          <template #title>兑换码生成</template>
         </el-menu-item>
       </el-menu>
     </el-aside>
@@ -64,16 +69,12 @@
             <Expand v-else />
           </el-icon>
           <el-breadcrumb separator="/">
-            <el-breadcrumb-item :to="{ path: '/dashboard' }">首页</el-breadcrumb-item>
+            <el-breadcrumb-item :to="{ path: '/admin/dashboard' }">首页</el-breadcrumb-item>
             <el-breadcrumb-item>{{ menuTitle }}</el-breadcrumb-item>
           </el-breadcrumb>
         </div>
         <div class="header-right">
           <el-tag size="small" type="success">在线</el-tag>
-          <el-button size="small" type="primary" plain @click="goTrainAdmin" style="margin-right: 8px;">
-            <el-icon><User /></el-icon>
-            训练端管理
-          </el-button>
           <el-dropdown @command="onCommand">
             <span class="user-info">
               <el-icon><UserFilled /></el-icon>
@@ -124,9 +125,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
-import { authApi } from '@/api/modules'
 
 const router = useRouter()
 const route = useRoute()
@@ -134,10 +134,6 @@ const auth = useAuthStore()
 
 const collapsed = ref(false)
 
-function goTrainAdmin() {
-  // 直接改 hash,Vue Router 同一份 spa 会切到训练端路由
-  window.location.hash = '#/train/admin'
-}
 const pwdDialog = ref(false)
 const pwdLoading = ref(false)
 const pwdForm = ref({ old_password: '', new_password: '', confirm: '' })
@@ -146,8 +142,12 @@ const activeMenu = computed(() => route.path)
 const menuTitle = computed(() => route.meta?.title || '')
 
 onMounted(async () => {
-  // 启动时验证 token 并刷新用户信息
+  // 启动时尝试获取用户信息。如果用户没有 admin token(例如从训练端误入),
+  // 不在此处强制跳转,让具体页面(如 UsersAdmin)给出友好的引导提示。
+  if (!auth.token) return
   try {
+    // 复用 trainApi.me 也能读 /auth/me,但为避免双重 import,这里直接调 api
+    const { authApi } = await import('@/api/modules')
     const me = await authApi.me()
     const payload = me?.data ?? me
     if (payload?.username) {
@@ -158,8 +158,9 @@ onMounted(async () => {
       }
     }
   } catch {
+    // token 过期则清掉,跳到登录页(用户已经在 admin 区域,这样体验比卡死好)
     auth.clear()
-    router.push('/login')
+    router.push('/admin/login')
   }
 })
 
@@ -168,7 +169,7 @@ async function onCommand(cmd) {
     try { await authApi.logout() } catch {}
     auth.clear()
     ElMessage.success('已退出登录')
-    router.push('/login')
+    router.push('/admin/login')
   } else if (cmd === 'password') {
     pwdForm.value = { old_password: '', new_password: '', confirm: '' }
     pwdDialog.value = true
@@ -187,7 +188,7 @@ async function changePassword() {
     pwdDialog.value = false
     setTimeout(() => {
       auth.clear()
-      router.push('/login')
+      router.push('/admin/login')
     }, 800)
   } catch (e) {
     ElMessage.error(e.message)

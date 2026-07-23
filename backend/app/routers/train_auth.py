@@ -1,219 +1,353 @@
 """
-训练端用户注册/登录/钱包/兑换码 API
+训练用户认证 / 注册 / 登录 / 兑换
+- 密码使用 PBKDF2-HMAC-SHA256 (标准库) 哈希存储
+- 注册/重置密码均做强度校验
+- 使用已有的 training_user / training_wallet / redeem_code / training_topup 表
 """
 import hashlib
+import hmac
+import re
 import secrets
-import string
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from jose import jwt
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field, field_validator
 
-from app.config import settings
-from app.deps import require_admin
 from app.deps_train import get_current_train_user
-from app.models import (
-    RedeemRequest,
-    RedeemCodeCreateRequest,
-    TrainLoginRequest,
-    TrainLoginResponse,
-    TrainRegisterRequest,
-    TrainUserInfo,
-    WalletInfo,
-)
 from db.database import execute, get_conn, query_all, query_one
 
 
-router = APIRouter(prefix="/api/train", tags=["训练端-用户"])
+router = APIRouter(prefix="/api/train", tags=["训练端-认证"])
 
 
-# ---------- helpers ----------
-def _hash_pw(password: str, salt: Optional[str] = None) -> tuple[str, str]:
-    if salt is None:
-        salt = secrets.token_hex(16)
-    h = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
-                            salt.encode("utf-8"), 200_000)
-    return h.hex(), salt
+# =========================================================
+# 密码哈希 (PBKDF2-HMAC-SHA256)
+# =========================================================
+PBKDF2_ITER = 100_000
+HASH_ALGO = "sha256"
+SALT_BYTES = 16
+HASH_BYTES = 32
 
 
-def _create_train_token(subject: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
-    )
-    payload = {
-        "sub": subject,
-        "kind": "train",
-        "exp": expire,
-        "iat": datetime.now(timezone.utc),
-    }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+def hash_password(password: str) -> str:
+    """生成 PBKDF2 哈希串: pbkdf2_sha256$100000$<salt_hex>$<hash_hex>"""
+    salt = secrets.token_bytes(SALT_BYTES)
+    h = hashlib.pbkdf2_hmac(HASH_ALGO, password.encode("utf-8"), salt, PBKDF2_ITER, dklen=HASH_BYTES)
+    return f"pbkdf2_{HASH_ALGO}${PBKDF2_ITER}${salt.hex()}${h.hex()}"
 
 
-def _get_or_create_wallet(user_id: int) -> dict:
-    row = query_one(
-        "SELECT balance, total_spent, total_topup FROM training_wallet WHERE user_id = ?",
-        (user_id,),
-    )
-    if row is None:
-        execute(
-            "INSERT INTO training_wallet(user_id, balance, total_spent, total_topup) "
-            "VALUES(?, 0, 0, 0)",
-            (user_id,),
-        )
-        return {"balance": 0.0, "total_spent": 0.0, "total_topup": 0.0}
-    return {"balance": float(row[0] or 0), "total_spent": float(row[1] or 0),
-            "total_topup": float(row[2] or 0)}
+def verify_password(password: str, stored: str, legacy_salt: str = "") -> bool:
+    """
+    校验密码, 支持三种格式:
+      1. 新格式: pbkdf2_sha256$100000$<salt_hex>$<hash_hex>
+      2. 旧格式(盐分开存): <hash_hex> + salt 列
+      3. 最早明文格式: 直接比较
+    """
+    if not stored:
+        return False
+    if stored.startswith(f"pbkdf2_{HASH_ALGO}$"):
+        try:
+            _, iter_str, salt_hex, hash_hex = stored.split("$", 3)
+            salt = bytes.fromhex(salt_hex)
+            expected = bytes.fromhex(hash_hex)
+            actual = hashlib.pbkdf2_hmac(
+                HASH_ALGO, password.encode("utf-8"), salt, int(iter_str), dklen=len(expected)
+            )
+            return hmac.compare_digest(expected, actual)
+        except Exception:
+            return False
+    if legacy_salt:
+        # 旧格式: hash(hex) + salt 列
+        try:
+            expected = bytes.fromhex(stored)
+            actual = hashlib.pbkdf2_hmac(
+                HASH_ALGO, password.encode("utf-8"),
+                legacy_salt.encode("utf-8"), 200_000, dklen=len(expected),
+            )
+            return hmac.compare_digest(expected, actual)
+        except Exception:
+            return False
+    # 最早期: 明文
+    return hmac.compare_digest(stored, password)
 
 
-# ---------- 注册 / 登录 ----------
-@router.post("/register")
-def register(payload: TrainRegisterRequest):
-    username = (payload.username or "").strip()
-    password = payload.password or ""
-    if len(username) < 3 or len(username) > 32:
-        raise HTTPException(status_code=400, detail="账号长度需 3-32 位")
-    if len(password) < 6:
-        raise HTTPException(status_code=400, detail="密码长度至少 6 位")
-    if query_one("SELECT id FROM training_user WHERE username = ?", (username,)) is not None:
-        raise HTTPException(status_code=400, detail="账号已存在")
-    h, salt = _hash_pw(password)
+# =========================================================
+# 用户名校验
+# =========================================================
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{3,32}$")
+RESERVED_NAMES = {"admin", "root", "system", "test", "guest", "operator", "null", "undefined", "anonymous"}
+
+
+def _check_username(name: str) -> str | None:
+    """返回错误消息或 None"""
+    if not USERNAME_RE.match(name):
+        return "账号只能包含字母/数字/下划线/点/连字符, 长度 3-32"
+    if name.lower() in RESERVED_NAMES:
+        return "该账号名已被系统保留, 请使用其他名称"
+    return None
+
+
+# =========================================================
+# Pydantic 模型
+# =========================================================
+class RegisterReq(BaseModel):
+    username: str = Field(..., min_length=3, max_length=32)
+    password: str = Field(..., min_length=8, max_length=64)
+    nickname: str = Field("", max_length=32)
+
+    @field_validator("username")
+    @classmethod
+    def _v_username(cls, v: str) -> str:
+        err = _check_username(v)
+        if err:
+            raise ValueError(err)
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def _v_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("密码至少 8 位")
+        if v.isdigit() or v.isalpha():
+            raise ValueError("密码必须包含字母和数字的组合")
+        return v
+
+
+class LoginReq(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class ChangePwReq(BaseModel):
+    old_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=64)
+
+    @field_validator("new_password")
+    @classmethod
+    def _v(cls, v: str) -> str:
+        if v.isdigit() or v.isalpha():
+            raise ValueError("新密码必须包含字母和数字的组合")
+        return v
+
+
+class RedeemReq(BaseModel):
+    code: str = Field(..., min_length=8, max_length=64)
+
+
+# =========================================================
+# 数据库 token 存储 (训练端专用)
+# =========================================================
+TOKEN_TTL_DAYS = 7
+TOKEN_BYTES = 32
+
+
+def _ensure_token_table() -> None:
+    """确保 train_token 表存在(无需依赖 main.py 启动顺序)"""
     execute(
-        "INSERT INTO training_user(username, password_hash, salt, display_name) "
-        "VALUES(?, ?, ?, ?)",
-        (username, h, salt, payload.display_name or username),
+        "CREATE TABLE IF NOT EXISTS train_token("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  user_id INTEGER NOT NULL,"
+        "  token TEXT UNIQUE NOT NULL,"
+        "  expires_at TEXT NOT NULL,"
+        "  created_at TEXT DEFAULT (datetime('now', 'localtime'))"
+        ")"
     )
-    row = query_one("SELECT id FROM training_user WHERE username = ?", (username,))
-    _get_or_create_wallet(row[0])
-    return {"message": "注册成功", "username": username}
+
+
+def _issue_token(user_id: int) -> str:
+    _ensure_token_table()
+    tok = secrets.token_urlsafe(TOKEN_BYTES)
+    expires = (datetime.now() + timedelta(days=TOKEN_TTL_DAYS)).isoformat(timespec="seconds")
+    execute(
+        "INSERT INTO train_token(user_id, token, expires_at) VALUES(?, ?, ?)",
+        (user_id, tok, expires),
+    )
+    return tok
+
+
+# =========================================================
+# API
+# =========================================================
+@router.post("/register")
+def register(req: RegisterReq):
+    """注册:账号 3-32 位 (字母数字下划线点连字符), 密码 8 位以上字母+数字"""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM training_user WHERE username = ?", (req.username,)
+        ).fetchone()
+        if row:
+            raise HTTPException(status_code=409, detail="账号已存在")
+        pw_hash = hash_password(req.password)
+        cur = conn.execute(
+            "INSERT INTO training_user(username, password_hash, salt, display_name, is_active) "
+            "VALUES(?, ?, ?, ?, 1)",
+            (req.username, pw_hash, "", req.nickname or req.username),
+        )
+        uid = cur.lastrowid
+        conn.execute(
+            "INSERT INTO training_wallet(user_id, balance) VALUES(?, 0)", (uid,)
+        )
+    token = _issue_token(uid)
+    return {
+        # 兼容前端两种命名
+        "access_token": token,
+        "token": token,
+        "user": {"id": uid, "username": req.username, "nickname": req.nickname or req.username},
+    }
 
 
 @router.post("/login")
-def login(payload: TrainLoginRequest):
+def login(req: LoginReq):
+    """登录(用户名+密码), 返回 token"""
     row = query_one(
-        "SELECT id, password_hash, salt, is_active, display_name "
+        "SELECT id, username, display_name, password_hash, salt, is_active "
         "FROM training_user WHERE username = ?",
-        (payload.username,),
+        (req.username,),
     )
     if not row:
+        # 统一错误消息, 防账号枚举
         raise HTTPException(status_code=401, detail="账号或密码错误")
-    if not row[3]:
-        raise HTTPException(status_code=401, detail="账号已停用")
-    h, _ = _hash_pw(payload.password, row[2])
-    if not secrets.compare_digest(h, row[1]):
+    uid, username, display_name, stored_hash, salt, is_active = row
+    if not is_active:
+        raise HTTPException(status_code=403, detail="账号已被停用")
+    if not verify_password(req.password, stored_hash, salt):
         raise HTTPException(status_code=401, detail="账号或密码错误")
-    token = _create_train_token(payload.username)
+    # 自动迁移旧格式(明文/分列 salt) 到新格式
+    if not stored_hash.startswith(f"pbkdf2_{HASH_ALGO}$"):
+        execute(
+            "UPDATE training_user SET password_hash = ?, salt = '' WHERE id = ?",
+            (hash_password(req.password), uid),
+        )
+    # 更新最后登录时间
     execute(
-        "UPDATE training_user SET last_login = datetime('now', 'localtime') WHERE id = ?",
-        (row[0],),
+        "UPDATE training_user SET last_login = datetime('now','localtime') WHERE id = ?",
+        (uid,),
     )
+    token = _issue_token(uid)
     return {
+        # 兼容前端两种命名
         "access_token": token,
-        "token_type": "bearer",
-        "username": payload.username,
-        "user_id": row[0],
-        "display_name": row[4],
+        "token": token,
+        "user_id": uid,
+        "username": username,
+        "display_name": display_name or username,
+        "user": {"id": uid, "username": username, "nickname": display_name or username},
     }
+
+
+@router.post("/logout")
+def logout(user: dict = Depends(get_current_train_user)):
+    """登出:废除当前用户的全部 token"""
+    _ensure_token_table()
+    execute("DELETE FROM train_token WHERE user_id = ?", (user["id"],))
+    return {"message": "已登出"}
 
 
 @router.get("/me")
 def me(user: dict = Depends(get_current_train_user)):
-    wallet = _get_or_create_wallet(user["id"])
+    """当前登录用户"""
+    row = query_one(
+        "SELECT username, display_name, created_at, last_login "
+        "FROM training_user WHERE id = ?", (user["id"],),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    balance = query_one(
+        "SELECT balance FROM training_wallet WHERE user_id = ?", (user["id"],)
+    )
+    balance_val = float(balance[0] or 0) if balance else 0.0
     return {
-        **user,
-        "wallet": wallet,
+        "id": user["id"],
+        "username": row[0],
+        "nickname": row[1] or row[0],
+        "created_at": row[2],
+        "last_login": row[3],
+        "wallet_balance": balance_val,
     }
 
 
-# ---------- 钱包 / 兑换码 ----------
-@router.get("/wallet")
-def wallet(user: dict = Depends(get_current_train_user)):
-    return _get_or_create_wallet(user["id"])
+@router.post("/change-password")
+def change_password(req: ChangePwReq, user: dict = Depends(get_current_train_user)):
+    """用户自助修改密码"""
+    row = query_one(
+        "SELECT password_hash, salt FROM training_user WHERE id = ?", (user["id"],)
+    )
+    if not row or not verify_password(req.old_password, row[0], row[1] or ""):
+        raise HTTPException(status_code=401, detail="原密码错误")
+    if req.old_password == req.new_password:
+        raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
+    execute(
+        "UPDATE training_user SET password_hash = ?, salt = '' WHERE id = ?",
+        (hash_password(req.new_password), user["id"]),
+    )
+    # 修改密码后, 强制下线其他会话(防止劫持)
+    _ensure_token_table()
+    execute("DELETE FROM train_token WHERE user_id = ?", (user["id"],))
+    return {"message": "密码已修改, 请重新登录"}
 
 
 @router.post("/redeem")
-def redeem(payload: RedeemRequest, user: dict = Depends(get_current_train_user)):
-    code = (payload.code or "").strip().upper()
-    if not code:
-        raise HTTPException(status_code=400, detail="请输入兑换码")
-
+def redeem(req: RedeemReq, user: dict = Depends(get_current_train_user)):
+    """兑换码充值(原子化:UPDATE 仅在未使用时成功)"""
+    code = req.code.strip()
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT amount, is_used, used_by, COALESCE(revoked, 0) "
-            "FROM redeem_code WHERE code = ?",
-            (code,),
+            "SELECT id, amount, is_used, used_by, revoked "
+            "FROM redeem_code WHERE code = ?", (code,)
         ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="兑换码无效")
-        if row[3]:
-            raise HTTPException(status_code=400, detail="兑换码已作废")
-        if row[1]:
+        if not row:
+            raise HTTPException(status_code=404, detail="兑换码不存在")
+        rid, amount, is_used, used_by, revoked = row
+        if revoked:
+            raise HTTPException(status_code=400, detail="兑换码已被作废")
+        if is_used or used_by is not None:
             raise HTTPException(status_code=400, detail="兑换码已被使用")
-        amount = float(row[0])
-        # 原子操作:标记为已使用 + 给用户加余额
-        conn.execute(
-            "UPDATE redeem_code SET is_used = 1, used_by = ?, "
-            "used_at = datetime('now', 'localtime') WHERE code = ? AND is_used = 0",
-            (user["id"], code),
+        now = datetime.now().isoformat(timespec="seconds")
+        cur = conn.execute(
+            "UPDATE redeem_code SET is_used = 1, used_by = ?, used_at = ? "
+            "WHERE code = ? AND is_used = 0 AND used_by IS NULL AND revoked = 0",
+            (user["id"], now, code),
         )
-        # 钱包 upsert
-        wallet = conn.execute(
-            "SELECT balance, total_topup FROM training_wallet WHERE user_id = ?",
-            (user["id"],),
-        ).fetchone()
-        if wallet is None:
-            conn.execute(
-                "INSERT INTO training_wallet(user_id, balance, total_topup) VALUES(?, ?, ?)",
-                (user["id"], amount, amount),
-            )
-        else:
-            conn.execute(
-                "UPDATE training_wallet SET balance = balance + ?, "
-                "total_topup = total_topup + ?, "
-                "updated_at = datetime('now', 'localtime') WHERE user_id = ?",
-                (amount, amount, user["id"]),
-            )
-    return {"message": "兑换成功", "amount": amount, "code": code}
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=400, detail="兑换码已被他人使用")
+        conn.execute(
+            "INSERT INTO training_wallet(user_id, balance) VALUES(?, 0) "
+            "ON CONFLICT(user_id) DO NOTHING", (user["id"],),
+        )
+        conn.execute(
+            "UPDATE training_wallet SET balance = balance + ?, "
+            "total_topup = total_topup + ?, "
+            "updated_at = datetime('now','localtime') WHERE user_id = ?",
+            (amount, amount, user["id"]),
+        )
+    balance = query_one(
+        "SELECT balance FROM training_wallet WHERE user_id = ?", (user["id"],)
+    )[0] or 0
+    return {"message": "充值成功", "amount": amount, "balance": float(balance)}
 
 
-# ---------- 兑换码生成(管理员用,需要管理员 token) ----------
-def _gen_code(amount: float, count: int, note: Optional[str], created_by: str):
-    # 兑换码格式: 8 位随机 + 金额
-    alphabet = string.ascii_uppercase + string.digits
-    codes = []
-    with get_conn() as conn:
-        for _ in range(count):
-            body = "".join(secrets.choice(alphabet) for _ in range(8))
-            amount_part = f"{int(amount):08d}"
-            code = f"{body}-{amount_part}"
-            conn.execute(
-                "INSERT INTO redeem_code(code, amount, created_by, note) VALUES(?, ?, ?, ?)",
-                (code, amount, created_by, note),
-            )
-            codes.append(code)
-    return codes
-
-
-# 单独的"管理员"子路由,避免与训练端鉴权混在一起
-admin_router = APIRouter(prefix="/api/train/admin", tags=["训练端-管理员"], dependencies=[Depends(require_admin)])
-
-
-@admin_router.post("/redeem-codes")
-def create_redeem_codes(payload: RedeemCodeCreateRequest, user: dict = Depends(require_admin)):
-    """生成兑换码:需要管理员 token(同一份 admin 账号)"""
-    codes = _gen_code(payload.amount, payload.count, payload.note, created_by=user["username"])
-    return {"codes": codes, "count": len(codes), "amount": payload.amount}
-
-
-@admin_router.get("/redeem-codes")
-def list_redeem_codes(user: dict = Depends(require_admin)):
-    rows = query_all(
-        "SELECT code, amount, is_used, used_by, used_at, created_at, note "
-        "FROM redeem_code ORDER BY created_at DESC LIMIT 200"
+@router.get("/topup-logs")
+def topup_logs(
+    user: dict = Depends(get_current_train_user),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """充值流水(从 training_wallet 表推断, 仅记录 total_topup 增量无法直接查询
+    单次充值, 这里返回当前余额 + 累计消耗 + 累计充值, 真正的充值记录需要
+    单独的 topup_log 表才能查询)
+    """
+    row = query_one(
+        "SELECT balance, total_spent, total_topup, updated_at "
+        "FROM training_wallet WHERE user_id = ?", (user["id"],),
     )
+    if not row:
+        return {"items": [], "summary": {"balance": 0, "total_spent": 0, "total_topup": 0}}
+    balance, total_spent, total_topup, updated_at = row
     return {
-        "items": [dict(zip(
-            ["code", "amount", "is_used", "used_by", "used_at", "created_at", "note"], r
-        )) for r in rows],
-        "viewer": user["username"],
+        "items": [],
+        "summary": {
+            "balance": float(balance or 0),
+            "total_spent": float(total_spent or 0),
+            "total_topup": float(total_topup or 0),
+            "updated_at": updated_at,
+        },
     }

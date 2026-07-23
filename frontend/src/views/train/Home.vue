@@ -162,48 +162,59 @@ onMounted(load)
 </script>
 
 <style scoped>
-.hero { padding: 8px 4px; }
-.hero h2 { margin: 0 0 8px; color: #f3f3f3; }
-.muted { color: #b4bcd0; margin: 0 0 16px; }
-.page-card { background: #fff; padding: 18px 22px; border-radius: 6px; }
+.hero { padding: var(--space-md) 0; }
+.hero h2 {
+  margin: 0 0 var(--space-sm);
+  color: var(--text-primary);
+  font-size: var(--text-3xl);
+  font-weight: var(--font-bold);
+}
+.muted { color: var(--text-secondary); margin: 0 0 var(--space-lg); }
+.page-card {
+  background: var(--bg-card);
+  padding: var(--space-2xl);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color-light);
+  box-shadow: var(--shadow-xs);
+  margin-bottom: var(--space-lg);
+}
 
 .metric-card {
-  background: #f6f8fb; border-radius: 6px; padding: 16px;
+  background: var(--bg-muted);
+  border-radius: var(--radius-md);
+  padding: var(--space-xl);
   display: flex; flex-direction: column;
-  border: 1px solid #ebeef5; transition: all 0.15s;
+  border: 1px solid var(--border-color-light);
+  transition: all var(--transition-fast);
   min-height: 130px;
 }
-.metric-card:hover { border-color: #c0c4cc; }
+.metric-card:hover { border-color: var(--border-color-dark); }
 .balance-card {
-  background: linear-gradient(135deg, #1f3b66 0%, #0f1d33 100%);
+  background: linear-gradient(135deg, #1e3a5f 0%, #0f2342 100%);
   color: #fff;
 }
 .balance-card * { color: inherit; }
-.balance-card .lbl { color: rgba(255, 255, 255, 0.85); font-size: 13px; }
-.balance-card .lbl-hint { color: rgba(255, 255, 255, 0.55); font-size: 11px; margin-top: 2px; }
-.balance-card .value { color: #67c23a; font-size: 28px; font-weight: bold; margin: 6px 0 8px; line-height: 1.1; }
-.balance-card .btn-block { margin-top: auto; }
+.balance-card .lbl { color: rgba(255, 255, 255, 0.85); font-size: var(--text-sm); }
+.balance-card .value { color: var(--color-success); font-size: var(--text-4xl); font-weight: var(--font-bold); margin: var(--space-sm) 0 var(--space-md); line-height: 1.1; }
+
+.muted-card .lbl { font-size: var(--text-xs); color: var(--text-secondary); }
+.muted-card .lbl-hint { font-size: var(--text-xs); color: var(--text-placeholder); margin-top: var(--space-xs); }
+.muted-card .value { font-size: var(--text-3xl); font-weight: var(--font-bold); margin: var(--space-sm) 0 var(--space-md); color: var(--text-primary); line-height: 1.1; }
 
 .btn-cta {
   width: 100%; margin-top: auto;
-  background: rgba(255, 255, 255, 0.95); color: #1f3b66;
-  border: none; font-weight: bold;
+  background: rgba(255, 255, 255, 0.95); color: #1e3a5f;
+  border: none; font-weight: var(--font-semibold);
 }
-.btn-cta:hover { background: #fff; color: #0f1d33; transform: translateY(-1px); }
-.btn-cta * { color: inherit !important; }
-
-.muted-card .lbl { font-size: 12px; color: #909399; }
-.muted-card .lbl-hint { font-size: 11px; color: #b4bcd0; margin-top: 2px; }
-.muted-card .value { font-size: 24px; font-weight: bold; margin: 6px 0 8px; color: #303133; line-height: 1.1; }
-.muted-card .meta { color: #606266; }
+.btn-cta:hover { background: #fff; color: #0f2342; transform: translateY(-1px); }
 
 .btn-block { width: 100%; }
 
 .page-title-row {
   display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: var(--space-lg);
 }
 .page-title-row .page-title { margin: 0; }
-.muted-code { color: #909399; margin-left: 4px; font-size: 12px; }
-.highlight-date { color: #67c23a; font-weight: bold; }
+.muted-code { color: var(--text-placeholder); margin-left: var(--space-xs); font-size: var(--text-xs); }
+.highlight-date { color: var(--color-success); font-weight: var(--font-semibold); }
 </style>
