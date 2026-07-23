@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+.uv-cache/
+
+# uv 生成的 lock 文件(可选提交)
+# uv.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 数据 & 日志 (运行时生成)
+backend/data/stock.db
+backend/data/stock.db-shm
+backend/data/stock.db-wal
+backend/data/checkpoints/
+backend/logs/*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 前端调试
+frontend/.cache/
+frontend/dist/
+frontend/node_modules/
+frontend/.vite/
+frontend/npm-debug.log*
+frontend/yarn-error.log*
+
+# TradeDojo 项目本地配置
+.env
+.env.local
+*.local
+
+# 临时凭据 (JWT token 等),严禁提交
+backend/admin_tok.tmp
+backend/admin_tok.*.tmp
+backend/Kronos-base/model.safetensors
