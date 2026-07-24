@@ -14,6 +14,7 @@
         >
           <el-menu-item index="/train/home">训练首页</el-menu-item>
           <el-menu-item index="/train/setup">发起训练</el-menu-item>
+          <el-menu-item index="/train/stats">交割单统计</el-menu-item>
           <el-menu-item index="/train/wallet">钱包 / 兑换</el-menu-item>
         </el-menu>
       </div>

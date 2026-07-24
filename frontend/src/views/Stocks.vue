@@ -21,12 +21,15 @@
       <el-button type="primary" @click="load(1)"><el-icon><Search /></el-icon>查询</el-button>
       <el-button @click="reset">重置</el-button>
       <span class="grow"></span>
+      <el-button @click="exportCsv" :disabled="!list.length">
+        <el-icon><Download /></el-icon>导出 CSV
+      </el-button>
       <el-button @click="load()"><el-icon><RefreshRight /></el-icon>刷新</el-button>
     </div>
 
     <el-table :data="list" stripe v-loading="loading" @row-click="openDetail">
-      <el-table-column prop="code" label="代码" width="100" />
-      <el-table-column prop="name" label="名称" width="140" />
+      <el-table-column prop="code" label="代码" width="100" sortable />
+      <el-table-column prop="name" label="名称" width="140" sortable />
       <el-table-column prop="market" label="市场" width="80">
         <template #default="{ row }">
           <el-tag size="small" :type="row.market === 'sh' ? 'danger' : (row.market === 'sz' ? 'warning' : 'info')">
@@ -34,8 +37,8 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="industry" label="行业" />
-      <el-table-column prop="list_date" label="上市日期" width="120" />
+      <el-table-column prop="industry" label="行业" sortable />
+      <el-table-column prop="list_date" label="上市日期" width="120" sortable />
       <el-table-column label="状态" width="80">
         <template #default="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
@@ -151,6 +154,25 @@ function goKline(code) {
 function goBacktest(code) {
   detailVisible.value = false
   router.push({ path: '/backtest', query: { code } })
+}
+
+function exportCsv() {
+  if (!list.value.length) return
+  const headers = ['代码', '名称', '市场', '行业', '上市日期', '状态']
+  const rows = list.value.map((r) => [
+    r.code, r.name, (r.market || '').toUpperCase(),
+    r.industry || '-', r.list_date || '-',
+    r.is_active ? '在市' : '退市',
+  ])
+  const csv = [headers, ...rows].map((cols) => cols.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `stocks_${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+  ElMessage.success('已导出 CSV')
 }
 
 onMounted(() => {

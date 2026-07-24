@@ -14,8 +14,12 @@ from app.database import get_user_by_username, verify_password
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
-def create_access_token(subject: str, expires_minutes: Optional[int] = None) -> str:
-    """生成 JWT"""
+def create_access_token(
+    subject: str,
+    expires_minutes: Optional[int] = None,
+    extra: Optional[dict] = None,
+) -> str:
+    """生成 JWT,可附带额外字段(如 kind=train/admin)"""
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=expires_minutes or settings.ACCESS_TOKEN_EXPIRE_MINUTES
     )
@@ -24,6 +28,8 @@ def create_access_token(subject: str, expires_minutes: Optional[int] = None) -> 
         "exp": expire,
         "iat": datetime.now(timezone.utc),
     }
+    if extra:
+        payload.update(extra)
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 

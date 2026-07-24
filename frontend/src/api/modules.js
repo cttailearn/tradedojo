@@ -90,6 +90,10 @@ export const trainApi = {
   advance: (id, days = 1) => api.post(`/train/sessions/${id}/advance`, { days }),
   finish: (id) => api.post(`/train/sessions/${id}/finish`),
 
+  // 交割单统计 & 行为分析
+  statsOverview: () => api.get('/train/stats/overview'),
+  sessionStats: (id) => api.get(`/train/stats/session/${id}`),
+
   // 兑换码管理(管理员)
   redeemCodes: () => api.get('/train/admin/redeem-codes'),
   createRedeemCodes: (amount, count, note) =>

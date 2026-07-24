@@ -73,9 +73,12 @@ api.interceptors.response.use(
         }
       } else if (url.includes('/train/')) {
         // 用户端 token 过期/失效
+        // 注: 管理端页面调用 trainApi.* 时不应触发此分支(应传 admin token 走 /train/admin/*);
+        // 这里仅当访问的是训练端页面时才跳转用户端登录,避免在管理端误跳
         const t = useTrainAuthStore()
         t.clear()
-        if (router.currentRoute.value.path !== '/') {
+        const isTrainPage = router.currentRoute.value.path.startsWith('/train/')
+        if (isTrainPage && router.currentRoute.value.path !== '/') {
           ElMessage.error('用户端登录已过期,请重新登录')
           router.push('/')
         }
@@ -88,6 +91,15 @@ api.interceptors.response.use(
         }
       }
       return Promise.reject(new Error('登录已过期'))
+    }
+    // 网络错误 / 超时统一提示
+    if (err.code === 'ECONNABORTED' || /timeout/i.test(err.message || '')) {
+      ElMessage.error('请求超时,请稍后重试')
+      return Promise.reject(new Error('请求超时'))
+    }
+    if (!err.response) {
+      ElMessage.error('网络连接失败,请检查网络')
+      return Promise.reject(new Error('网络连接失败'))
     }
     const data = err.response?.data
     const msg =

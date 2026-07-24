@@ -180,22 +180,25 @@ onMounted(load)
 }
 
 .metric-card {
-  background: var(--bg-muted);
+  background: var(--bg-card);
   border-radius: var(--radius-md);
   padding: var(--space-xl);
   display: flex; flex-direction: column;
   border: 1px solid var(--border-color-light);
   transition: all var(--transition-fast);
   min-height: 130px;
+  box-shadow: var(--shadow-xs);
 }
-.metric-card:hover { border-color: var(--border-color-dark); }
+.metric-card:hover { border-color: var(--border-color-dark); box-shadow: var(--shadow-sm); }
+
+/* 余额卡:用浅渐变 + 左侧色条,保留重点但不与全局风格割裂 */
 .balance-card {
-  background: linear-gradient(135deg, #1e3a5f 0%, #0f2342 100%);
-  color: #fff;
+  background: linear-gradient(135deg, #f0f5ff 0%, #e6efff 100%);
+  border-left: 4px solid var(--color-primary);
 }
-.balance-card * { color: inherit; }
-.balance-card .lbl { color: rgba(255, 255, 255, 0.85); font-size: var(--text-sm); }
-.balance-card .value { color: var(--color-success); font-size: var(--text-4xl); font-weight: var(--font-bold); margin: var(--space-sm) 0 var(--space-md); line-height: 1.1; }
+.balance-card .lbl { font-size: var(--text-sm); color: var(--text-secondary); }
+.balance-card .value { color: var(--color-primary); font-size: var(--text-4xl);
+  font-weight: var(--font-bold); margin: var(--space-sm) 0 var(--space-md); line-height: 1.1; }
 
 .muted-card .lbl { font-size: var(--text-xs); color: var(--text-secondary); }
 .muted-card .lbl-hint { font-size: var(--text-xs); color: var(--text-placeholder); margin-top: var(--space-xs); }
@@ -203,10 +206,10 @@ onMounted(load)
 
 .btn-cta {
   width: 100%; margin-top: auto;
-  background: rgba(255, 255, 255, 0.95); color: #1e3a5f;
+  background: var(--color-primary); color: #fff;
   border: none; font-weight: var(--font-semibold);
 }
-.btn-cta:hover { background: #fff; color: #0f2342; transform: translateY(-1px); }
+.btn-cta:hover { background: var(--color-primary-dark); transform: translateY(-1px); }
 
 .btn-block { width: 100%; }
 

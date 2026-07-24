@@ -45,3 +45,10 @@ frontend/yarn-error.log*
 backend/admin_tok.tmp
 backend/admin_tok.*.tmp
 backend/Kronos-base/model.safetensors
+
+# 测试用的截图/日志(不入库)
+screenshots/
+screenshots/*.png
+screenshots/*.log
+screenshots/*.py
+screenshots/*.mjs

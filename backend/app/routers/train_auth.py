@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from app.deps_train import get_current_train_user
+from app.auth import create_access_token
 from db.database import execute, get_conn, query_all, query_one
 
 
@@ -155,14 +156,18 @@ def _ensure_token_table() -> None:
 
 
 def _issue_token(user_id: int) -> str:
+    """签发训练端 JWT,含 kind=train,供 get_current_train_user 校验"""
+    return create_access_token(subject=str(user_id), extra={"kind": "train"})
+
+
+# 兼容旧的不透明 token(保留 train_token 表,记录签发记录,便于审计/吊销)
+def _record_token(user_id: int, jti: str) -> None:
     _ensure_token_table()
-    tok = secrets.token_urlsafe(TOKEN_BYTES)
     expires = (datetime.now() + timedelta(days=TOKEN_TTL_DAYS)).isoformat(timespec="seconds")
     execute(
         "INSERT INTO train_token(user_id, token, expires_at) VALUES(?, ?, ?)",
-        (user_id, tok, expires),
+        (user_id, jti, expires),
     )
-    return tok
 
 
 # =========================================================
@@ -260,9 +265,28 @@ def me(user: dict = Depends(get_current_train_user)):
         "id": user["id"],
         "username": row[0],
         "nickname": row[1] or row[0],
+        "display_name": row[1] or row[0],
         "created_at": row[2],
         "last_login": row[3],
         "wallet_balance": balance_val,
+    }
+
+
+@router.get("/wallet")
+def get_wallet(user: dict = Depends(get_current_train_user)):
+    """训练资金钱包(供前端 trainApi.wallet() 调用,字段对齐 Home.vue 消费)"""
+    row = query_one(
+        "SELECT balance, total_spent, total_topup, updated_at "
+        "FROM training_wallet WHERE user_id = ?", (user["id"],),
+    )
+    if not row:
+        return {"balance": 0.0, "total_spent": 0.0, "total_topup": 0.0, "updated_at": None}
+    balance, total_spent, total_topup, updated_at = row
+    return {
+        "balance": float(balance or 0),
+        "total_spent": float(total_spent or 0),
+        "total_topup": float(total_topup or 0),
+        "updated_at": updated_at,
     }
 
 

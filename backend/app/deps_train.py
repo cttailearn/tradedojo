@@ -45,18 +45,29 @@ def get_current_train_user(token: str = Depends(oauth2_scheme_train)) -> dict:
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
         kind = payload.get("kind")
-        username: str = payload.get("sub")
-        if kind != "train" or not username:
+        sub = payload.get("sub")
+        if kind != "train" or not sub:
             raise cred_exc
+        # 兼容两种 sub 格式:数字字符串(新) / 用户名(旧)
+        if str(sub).isdigit():
+            row = query_one(
+                "SELECT id, username, display_name, last_login, is_active "
+                "FROM training_user WHERE id = ?",
+                (int(sub),),
+            )
+        else:
+            username = str(sub)
+            row = query_one(
+                "SELECT id, username, display_name, last_login, is_active "
+                "FROM training_user WHERE username = ?",
+                (username,),
+            )
     except JWTError:
         raise cred_exc
 
-    row = query_one(
-        "SELECT id, username, display_name, last_login, is_active "
-        "FROM training_user WHERE username = ?",
-        (username,),
-    )
-    if not row or not row[4]:
+    if not row:
+        raise cred_exc
+    if not row[4]:
         raise cred_exc
     return {
         "id": row[0],

@@ -75,8 +75,20 @@
       </el-table>
     </div>
 
+    <!-- 错误态 -->
+    <el-empty
+      v-if="!loading && loaded && loadError"
+      description="数据加载失败"
+      class="empty-error"
+    >
+      <template #image>
+        <el-icon :size="64" color="#f56c6c"><CircleCloseFilled /></el-icon>
+      </template>
+      <el-button type="primary" @click="load">重新加载</el-button>
+    </el-empty>
+
     <!-- 空状态(首次加载后无数据) -->
-    <div v-if="!loading && loaded && !stats.length" class="empty-state">
+    <div v-else-if="!loading && loaded && !stats.length" class="empty-state">
       <div class="icon">📊</div>
       <div class="title">尚未配置数据源</div>
       <div class="desc">请先前往「数据源」页面配置数据来源，然后执行数据更新任务</div>
@@ -93,6 +105,7 @@ import { systemApi } from '@/api/modules'
 const status = ref({ tables: {}, kline_by_adjust: [], recent_logs: [] })
 const loading = ref(false)
 const loaded = ref(false)
+const loadError = ref(false)
 
 const stats = computed(() => {
   const t = status.value.tables || {}
@@ -111,10 +124,32 @@ function formatNum(v) { return Number(v || 0).toLocaleString() }
 
 async function load() {
   loading.value = true
-  try { status.value = await systemApi.status() }
-  catch (e) { ElMessage.error(e.message) }
-  finally { loading.value = false; loaded.value = true }
+  loadError.value = false
+  // 兜底:10 秒仍无响应则视为超时,展示空状态而非永久 skeleton
+  const timeoutId = setTimeout(() => {
+    if (loading.value) {
+      loading.value = false
+      loaded.value = true
+      ElMessage.warning('数据加载超时,显示缓存为空状态')
+    }
+  }, 10000)
+  try {
+    status.value = await systemApi.status()
+  } catch (e) {
+    loadError.value = true
+    ElMessage.error(e.message || '加载失败')
+  } finally {
+    clearTimeout(timeoutId)
+    loading.value = false
+    loaded.value = true
+  }
 }
 
 onMounted(load)
 </script>
+
+<style scoped>
+.empty-error {
+  padding: 60px 0;
+}
+</style>

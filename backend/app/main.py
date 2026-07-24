@@ -27,7 +27,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.config import settings
 from app.database import ensure_default_admin, init_user_db
 from db.database import init_db
-from app.routers import auth, stocks, kline, tasks, backtest, system, scheduler, sources, kronos, train, train_auth, train_admin
+from app.routers import auth, stocks, kline, tasks, backtest, system, scheduler, sources, kronos, train, train_auth, train_admin, train_stats
 
 logger = logging.getLogger("app")
 
@@ -71,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(train_auth.router)
     app.include_router(train_admin.router)
     app.include_router(train.router)
+    app.include_router(train_stats.router)
 
     @app.get("/api/health")
     def health():

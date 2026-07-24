@@ -375,10 +375,14 @@ def start_session(req: TrainingSetupRequest, user: dict = Depends(get_current_tr
         req_sub = TrainingSetupRequest(**req.model_dump())
         stock = _pick_random_stock(req_sub)
 
-        # 初始揭示 = 训练开始日,从这一天起,用户能向前看 lookback 月数的历史数据,
-        # 但 K 线只能往后逐日推进:所以我们把 current_date 设置为 start_date 当天
-        # (用户立刻能看到 start_date 之前的全部历史 K 线作为分析依据)
-        current_dt = req.start_date
+        # 初始揭示 = 训练开始日,但若 start_date 是节假日/周末没有 K 线,
+        # 自动顺延到该股票的下个实际交易日,否则前端会拿到空 K 线图
+        cur = conn.execute(
+            "SELECT MIN(trade_date) FROM kline_daily "
+            "WHERE code = ? AND adjust_type = 'qfq' AND trade_date >= ?",
+            (stock["code"], req.start_date),
+        ).fetchone()
+        current_dt = (cur[0] if cur and cur[0] else req.start_date)
 
         cur = conn.execute(
             """INSERT INTO training_session(
@@ -487,9 +491,29 @@ def advance(session_id: int, req: AdvanceRequest, user: dict = Depends(get_curre
 @router.get("/sessions/{session_id}/kline")
 def session_kline(session_id: int, period: str = Query("daily", pattern="^(daily|weekly|monthly)$"),
                   user: dict = Depends(get_current_train_user)):
-    """返回已揭示的日/周/月 K 线"""
+    """返回已揭示的日/周/月 K 线(含 lookback_months 历史回看)"""
     sess = _session_for_user(user["id"], session_id)
-    daily = _kline_in_window(sess["code"], sess["start_date"], sess["reveal_date"] or sess["start_date"])
+    reveal_date = sess["reveal_date"] or sess["start_date"]
+    # 与 _build_session_view 保持一致:从 start_date - lookback_months 起
+    from datetime import datetime as _dt
+    try:
+        sd = _dt.strptime(sess["start_date"], "%Y-%m-%d").date()
+        lookback = sess["lookback_months"] or 6
+        year = sd.year - (lookback // 12)
+        month = sd.month - (lookback % 12)
+        while month <= 0:
+            month += 12
+            year -= 1
+        lookback_start = f"{year:04d}-{month:02d}-{sd.day:02d}"
+    except Exception:
+        lookback_start = sess["start_date"]
+    daily = _kline_in_window(sess["code"], lookback_start, reveal_date)
+    # 如果 reveal_date 落在非交易日(节假日),顺延到下一个交易日,以保证至少返回当前 bar
+    if daily and daily[-1]["trade_date"] < reveal_date:
+        # 找 reveal_date 当天及之后的第一根 K 线
+        next_bar = _kline_in_window(sess["code"], reveal_date, "2099-12-31")
+        if next_bar:
+            daily = daily + [next_bar[0]]
     if period == "daily" or not daily:
         return {"period": period, "items": daily}
     if period == "weekly":
