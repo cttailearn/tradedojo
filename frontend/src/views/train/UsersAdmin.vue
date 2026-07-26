@@ -1,26 +1,6 @@
 <template>
   <div class="users-admin">
-    <el-alert v-if="!hasAdminToken" type="warning" :closable="false" show-icon
-              style="margin-bottom: 16px;">
-      <template #title>此页面仅对管理员开放</template>
-      <div>
-        你目前登录的是用户端账号（<b>{{ trainUser?.username }}</b>），
-        没有管理员 token,无法访问用户端的管理后台。
-      </div>
-      <div style="margin-top: 8px;">
-        <el-button type="primary" size="small" @click="goAdminLogin">
-          <el-icon><Switch /></el-icon>切换到管理员登录
-        </el-button>
-        <el-link type="info" style="margin-left: 12px;" @click="goBackHome">
-          返回首页
-        </el-link>
-      </div>
-    </el-alert>
-
-    <el-alert v-else type="error" :closable="false" show-icon style="margin-bottom: 16px;">
-      <template #title>管理员后台·所有操作均会记入审计日志</template>
-      <span>当前操作者: <b>{{ adminWho }}</b> · 共 {{ actionLogTotal }} 条审计</span>
-    </el-alert>
+    <!-- 顶部提示已移除 -->
 
     <el-tabs v-if="hasAdminToken" v-model="activeTab">
       <!-- ===== 用户管理 ===== -->

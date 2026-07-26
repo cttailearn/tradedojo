@@ -1,29 +1,67 @@
 """
-定时调度服务 —— 后台线程 + schedule 库
+定时调度服务 —— 已重构为按数据类型独立 cron。
 
-- 启动后按配置的时间(如 16:30)每天自动执行数据更新
-- 支持启停 / 配置修改 / 立即触发 / 运行历史
-- 默认配置每天 16:30 执行 股票列表 + 指数 + 日K线
+- 每个数据任务(STOCK_LIST / STOCK_ENRICH / INDEX_DAILY / KLINE_DAILY)一条独立 cron,
+  配置存在 scheduler_job 表,可热更新。
+- 主循环每分钟检查一次,匹配则触发对应 updater(走 task_manager 的统一任务机制)。
+- 路由在 app/routers/scheduler.py,本模块只导出服务单例。
 """
+import json
 import logging
 import threading
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional
 
-import schedule
+from app.cron import CronExpr
+from db.database import get_conn
+from updater.registry import REGISTER, resolve_task
+from updater.types import DEFAULT_JOBS
 
 logger = logging.getLogger("scheduler")
 
-DEFAULT_CONFIG = {
-    "time": "16:30",                       # HH:MM 格式
-    "tasks": ["stock_list", "index", "kline_daily"],  # 任务列表(按顺序)
-    "adjust": "qfq",                       # 日K 复权方式
-    "days": 365,                           # 日K 回溯天数
-    "workers": 8,                          # 并发线程数
-}
+
+# ---------- DB 读写 ----------
+def _ensure_jobs_seeded():
+    """首次启动时把 DEFAULT_JOBS 写入 scheduler_job 表(已存在则跳过)"""
+    with get_conn() as conn:
+        existing = {r[0] for r in conn.execute("SELECT task FROM scheduler_job").fetchall()}
+        for task, cron, enabled, params in DEFAULT_JOBS:
+            if task not in existing:
+                conn.execute(
+                    "INSERT INTO scheduler_job(task, cron, enabled, params_json) VALUES (?,?,?,?)",
+                    (task, cron, 1 if enabled else 0, json.dumps(params, ensure_ascii=False)),
+                )
 
 
+def _load_jobs() -> List[Dict]:
+    """从 DB 加载所有任务配置"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT task, cron, enabled, params_json, last_run_at, last_status "
+            "FROM scheduler_job ORDER BY task"
+        ).fetchall()
+    return [
+        {
+            "task": r[0],
+            "cron": r[1],
+            "enabled": bool(r[2]),
+            "params": json.loads(r[3] or "{}"),
+            "last_run_at": r[4],
+            "last_status": r[5],
+        }
+        for r in rows
+    ]
+
+
+def _update_last_run(task: str, status: str):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE scheduler_job SET last_run_at = ?, last_status = ? WHERE task = ?",
+            (datetime.now().isoformat(timespec="seconds"), status, task),
+        )
+
+
+# ---------- 主调度器 ----------
 class SchedulerService:
     """单例调度服务"""
 
@@ -31,21 +69,27 @@ class SchedulerService:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
-        self.config: Dict = dict(DEFAULT_CONFIG)
         self.enabled: bool = False
-        self.history: List[Dict] = []  # 最近 20 次运行
+        self.history: List[Dict] = []
         self.last_run: Optional[Dict] = None
         self.next_run_at: Optional[str] = None
+        self._jobs_cache: List[Dict] = []
+        self._cron_cache: Dict[str, CronExpr] = {}
 
     # ---------- 状态 ----------
     def get_status(self) -> Dict:
+        try:
+            jobs = _load_jobs()
+        except Exception as e:
+            logger.warning(f"[Scheduler] 加载 jobs 失败: {e}")
+            jobs = []
         return {
             "enabled": self.enabled,
             "running": self._is_running(),
-            "config": dict(self.config),
             "next_run_at": self.next_run_at,
             "last_run": self.last_run,
             "history_count": len(self.history),
+            "jobs": jobs,
         }
 
     def _is_running(self) -> bool:
@@ -53,200 +97,268 @@ class SchedulerService:
 
     # ---------- 控制 ----------
     def start(self, config: Optional[Dict] = None) -> Dict:
-        """启动调度"""
         with self._lock:
-            if config:
-                self._validate_config(config)
-                self.config.update(config)
             self.enabled = True
             self._stop_event.clear()
-
-        # 重新计算下次运行时间
-        self._update_next_run()
+        _ensure_jobs_seeded()
 
         if self._is_running():
-            logger.info("[Scheduler] 已在运行中,仅更新配置")
-            return self.get_status()
-
-        self._thread = threading.Thread(
-            target=self._loop, name="SchedulerLoop", daemon=True,
-        )
-        self._thread.start()
-        logger.info(f"[Scheduler] 已启动: time={self.config['time']} tasks={self.config['tasks']}")
+            self._reload_jobs()
+            logger.info("[Scheduler] 已在运行,刷新 jobs")
+        else:
+            self._thread = threading.Thread(
+                target=self._loop, name="SchedulerLoop", daemon=True,
+            )
+            self._thread.start()
+            logger.info("[Scheduler] 已启动(按任务 cron)")
         return self.get_status()
 
     def stop(self) -> Dict:
-        """停止调度"""
         with self._lock:
             self.enabled = False
             self._stop_event.set()
-        logger.info("[Scheduler] 已停止")
-        # 等线程退出
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3)
         self.next_run_at = None
+        logger.info("[Scheduler] 已停止")
         return self.get_status()
 
-    def trigger_now(self) -> Dict:
-        """立即触发一次(不等定时)"""
-        logger.info("[Scheduler] 手动触发")
-        record = self._run_jobs()
-        # 同步更新 last_run,保持状态一致
-        self.last_run = record
-        return {"triggered": True, "record": record}
+    def trigger_now(self, task: Optional[str] = None) -> Dict:
+        """立即触发:
+           task=None  → 触发所有 enabled jobs(旧 trigger 行为)
+           task="xxx" → 触发单个任务
+        """
+        if task:
+            return self._trigger_one(task)
 
+        logger.info("[Scheduler] 手动触发全部 jobs")
+        triggered = []
+        for job in _load_jobs():
+            if not job["enabled"]:
+                continue
+            try:
+                self._dispatch(job)
+                triggered.append(job["task"])
+            except Exception as e:
+                logger.error(f"[Scheduler] {job['task']} 触发失败: {e}")
+        return {"triggered": triggered, "count": len(triggered)}
+
+    def _trigger_one(self, task: str) -> Dict:
+        try:
+            from updater.types import TaskType
+            try:
+                task_type = TaskType(task)
+            except ValueError:
+                # 旧别名也接受
+                from updater.registry import LEGACY_TASK_ALIAS
+                if task in LEGACY_TASK_ALIAS:
+                    task_type, _ = LEGACY_TASK_ALIAS[task]
+                else:
+                    return {"triggered": False, "error": f"未知 task: {task}"}
+        except Exception as e:
+            return {"triggered": False, "error": str(e)}
+
+        jobs = _load_jobs()
+        job = next((j for j in jobs if j["task"] == task_type.value), None)
+        if not job:
+            return {"triggered": False, "error": "job 未注册"}
+        try:
+            self._dispatch(job)
+            return {"triggered": True, "task": task_type.value}
+        except Exception as e:
+            return {"triggered": False, "error": str(e)}
+
+    def update_job(self, task: str, cron: Optional[str] = None,
+                   enabled: Optional[bool] = None, params: Optional[dict] = None) -> Dict:
+        """更新单个 job 配置,即时热生效"""
+        from updater.types import TaskType
+        try:
+            task_type = TaskType(task)
+        except ValueError:
+            from updater.registry import LEGACY_TASK_ALIAS
+            if task not in LEGACY_TASK_ALIAS:
+                raise ValueError(f"未知 task: {task}")
+            task_type, _ = LEGACY_TASK_ALIAS[task]
+
+        if cron is not None:
+            CronExpr(cron)  # 校验
+        with get_conn() as conn:
+            if not conn.execute(
+                "SELECT 1 FROM scheduler_job WHERE task=?", (task_type.value,)
+            ).fetchone():
+                conn.execute(
+                    "INSERT INTO scheduler_job(task, cron, enabled, params_json) VALUES (?,?,?,?)",
+                    (task_type.value, cron or "0 0 * * *", 0,
+                     json.dumps(params or {}, ensure_ascii=False)),
+                )
+            else:
+                sets, vals = [], []
+                if cron is not None:
+                    sets.append("cron = ?"); vals.append(cron)
+                if enabled is not None:
+                    sets.append("enabled = ?"); vals.append(1 if enabled else 0)
+                if params is not None:
+                    sets.append("params_json = ?"); vals.append(
+                        json.dumps(params, ensure_ascii=False)
+                    )
+                sets.append("updated_at = ?"); vals.append(
+                    datetime.now().isoformat(timespec="seconds")
+                )
+                vals.append(task_type.value)
+                conn.execute(
+                    f"UPDATE scheduler_job SET {', '.join(sets)} WHERE task = ?", vals
+                )
+        if self._is_running():
+            self._reload_jobs()
+        return {"task": task_type.value, "updated": True}
+
+    def reload_jobs(self):
+        self._reload_jobs()
+
+    # ---------- 兼容旧端点 ----------
     def update_config(self, config: Dict) -> Dict:
-        """仅修改配置,不立即重启(下次启动生效或热重启)"""
-        with self._lock:
-            self._validate_config(config)
-            old = dict(self.config)
-            self.config.update(config)
-            changed = old != self.config
-
-        if changed and self._is_running():
-            # 热重启:清空 schedule 任务,下一轮自动按新配置生效
-            schedule.clear()
-            self._register_schedule()
-            logger.info(f"[Scheduler] 配置已更新并热应用: {self.config}")
-
-        self._update_next_run()
+        """兼容旧 update_config:
+           time = HH:MM         -> 合并到所有 enabled jobs 的 cron
+           tasks = [list]       -> 仅启用列出的任务
+           adjust/days/workers  -> 写入 KLINE_DAILY params
+        """
+        _ensure_jobs_seeded()
+        if "tasks" in config:
+            wanted = set()
+            for t in config["tasks"]:
+                try:
+                    tt, _ = resolve_task(t)
+                    wanted.add(tt.value)
+                except ValueError:
+                    raise ValueError(f"未知 task: {t}")
+            with get_conn() as conn:
+                conn.execute("UPDATE scheduler_job SET enabled = 0")
+                for w in wanted:
+                    conn.execute(
+                        "UPDATE scheduler_job SET enabled = 1 WHERE task = ?", (w,)
+                    )
+        if "time" in config:
+            try:
+                hh, mm = config["time"].split(":")
+                cron = f"{int(mm)} {int(hh)} * * *"
+                with get_conn() as conn:
+                    conn.execute("UPDATE scheduler_job SET cron = ?", (cron,))
+            except Exception as e:
+                raise ValueError(f"time 格式错误: {e}")
+        kparams = {}
+        for k in ("adjust", "days", "workers"):
+            if k in config:
+                kparams[k] = config[k]
+        if kparams:
+            if "days" in kparams:
+                kparams["days_back"] = kparams.pop("days")
+            with get_conn() as conn:
+                cur = conn.execute(
+                    "SELECT params_json FROM scheduler_job WHERE task='kline_daily'"
+                ).fetchone()
+                if cur:
+                    p = json.loads(cur[0] or "{}")
+                    p.update(kparams)
+                    conn.execute(
+                        "UPDATE scheduler_job SET params_json = ? WHERE task='kline_daily'",
+                        (json.dumps(p, ensure_ascii=False),)
+                    )
+        if self._is_running():
+            self._reload_jobs()
         return self.get_status()
 
     # ---------- 内部 ----------
-    def _validate_config(self, cfg: Dict):
-        """校验配置"""
-        if "time" in cfg:
-            try:
-                datetime.strptime(cfg["time"], "%H:%M")
-            except ValueError:
-                raise ValueError(f"time 格式错误,应为 HH:MM: {cfg['time']}")
-        if "tasks" in cfg:
-            valid = {"stock_list", "index", "kline_daily", "enrich", "daily_smart"}
-            invalid = set(cfg["tasks"]) - valid
-            if invalid:
-                raise ValueError(f"未知任务: {invalid}, 可选 {valid}")
-        if "adjust" in cfg and cfg["adjust"] not in {"qfq", "hfq", ""}:
-            raise ValueError(f"adjust 必须是 qfq/hfq/: {cfg['adjust']}")
-
-    def _update_next_run(self):
-        """计算下次运行时间"""
+    def _reload_jobs(self):
+        """重载 jobs 缓存(线程安全)"""
         try:
-            now = datetime.now()
-            hh, mm = self.config["time"].split(":")
-            target = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
-            if target <= now:
-                target += timedelta(days=1)
-            self.next_run_at = target.isoformat(timespec="seconds")
+            self._jobs_cache = _load_jobs()
+            self._cron_cache = {
+                j["task"]: CronExpr(j["cron"]) for j in self._jobs_cache
+            }
         except Exception as e:
-            logger.warning(f"[Scheduler] 计算下次运行时间失败: {e}")
-            self.next_run_at = None
-
-    def _register_schedule(self):
-        """注册 schedule 任务(每次配置变更后调用)"""
-        schedule.clear()
-        schedule.every().day.at(self.config["time"]).do(self._run_jobs_with_record)
+            logger.warning(f"[Scheduler] 重载 jobs 失败: {e}")
 
     def _loop(self):
-        """调度主循环"""
-        self._register_schedule()
-        self._update_next_run()
-        logger.info(f"[Scheduler] 循环已启动,下次运行: {self.next_run_at}")
+        """主循环:每分钟检查每条 job 的 cron 是否触发"""
+        self._reload_jobs()
+        logger.info(f"[Scheduler] 循环已启动,监控 {len(self._jobs_cache)} 条 jobs")
+
+        last_minute = -1
         while not self._stop_event.is_set():
-            try:
-                schedule.run_pending()
-            except Exception as e:
-                logger.error(f"[Scheduler] run_pending 异常: {e}")
-            # 30 秒一次,同时支持快速响应 stop
+            now = datetime.now()
+            cur_minute = (now.year, now.month, now.day, now.hour, now.minute)
+            if cur_minute != last_minute:
+                last_minute = cur_minute
+                for job in list(self._jobs_cache):
+                    if not job["enabled"]:
+                        continue
+                    cron = self._cron_cache.get(job["task"])
+                    if not cron or not cron.matches(now):
+                        continue
+                    try:
+                        self._dispatch(job)
+                    except Exception as e:
+                        logger.error(f"[Scheduler] {job['task']} 调度执行失败: {e}")
+                self._update_next_run_preview()
+
             if self._stop_event.wait(timeout=30):
                 break
+
         logger.info("[Scheduler] 循环退出")
 
-    def _run_jobs_with_record(self):
-        """schedule 触发的入口(包一层用于记录)"""
-        self.last_run = self._run_jobs()
+    def _update_next_run_preview(self):
+        try:
+            now = datetime.now()
+            candidates = []
+            for job in self._jobs_cache:
+                if not job["enabled"]:
+                    continue
+                cron = self._cron_cache.get(job["task"])
+                if cron:
+                    candidates.append(cron.next_after(now))
+            self.next_run_at = (
+                min(candidates).isoformat(timespec="seconds") if candidates else None
+            )
+        except Exception:
+            self.next_run_at = None
 
-    def _run_jobs(self) -> Dict:
-        """执行配置中的所有任务"""
+    def _dispatch(self, job: Dict):
+        """根据 job 配置实例化对应 updater 并提交到 task_manager"""
+        from app.task_manager import task_manager
+
+        try:
+            task_type, defaults = resolve_task(job["task"])
+        except ValueError:
+            logger.warning(f"[Scheduler] 未知 task: {job['task']}")
+            return
+
+        UpdaterCls, ParamModel = REGISTER.get(task_type, (None, None))
+        if UpdaterCls is None:
+            logger.warning(f"[Scheduler] {task_type} 未注册 updater")
+            return
+
+        merged = {**defaults, **(job.get("params") or {})}
+        try:
+            updater = UpdaterCls(merged)
+        except Exception as e:
+            logger.warning(f"[Scheduler] {job['task']} 参数校验失败: {e}")
+            return
+
+        name = f"{task_type.value}_cron"
+        task_id = task_manager.submit(name, updater.run)
+        logger.info(f"[Scheduler] 调度执行 {task_type.value} -> task_id={task_id}")
+        _update_last_run(task_type.value, "dispatched")
+
         record = {
             "started_at": datetime.now().isoformat(timespec="seconds"),
-            "tasks": [],
-            "success": True,
-            "error": None,
+            "task": task_type.value,
+            "task_id": task_id,
+            "trigger": "scheduler",
         }
-        logger.info(f"[Scheduler] 开始执行计划任务: {self.config['tasks']}")
-        try:
-            from updater.parallel_updater import ParallelKlineUpdater
-
-            for task_name in self.config["tasks"]:
-                t0 = datetime.now()
-                t_record = {
-                    "task": task_name,
-                    "started_at": t0.isoformat(timespec="seconds"),
-                    "status": "running",
-                    "result": None,
-                    "error": None,
-                }
-                try:
-                    if task_name == "stock_list":
-                        u = ParallelKlineUpdater()
-                        result = u.update_stock_list()
-                        t_record["result"] = {"updated": result}
-                    elif task_name == "index":
-                        u = ParallelKlineUpdater()
-                        result = u.update_index()
-                        t_record["result"] = {"updated": result}
-                    elif task_name == "kline_daily":
-                        u = ParallelKlineUpdater(max_workers=self.config.get("workers", 8))
-                        stats = u.update_all(
-                            adjust=self.config.get("adjust", "qfq"),
-                            days_back=self.config.get("days", 365),
-                            only_active=True,
-                        )
-                        t_record["result"] = stats
-                    elif task_name == "enrich":
-                        u = ParallelKlineUpdater()
-                        stats = u.enrich_stock_info(
-                            enrich_workers=self.config.get("workers", 4),
-                        )
-                        t_record["result"] = stats
-                    elif task_name == "daily_smart":
-                        u = ParallelKlineUpdater(max_workers=self.config.get("workers", 8))
-                        stats = u.update_daily_smart_only(
-                            adjust=self.config.get("adjust", "qfq"),
-                            days_back=self.config.get("days", 365),
-                        )
-                        t_record["result"] = stats
-                    t_record["status"] = "success"
-                except Exception as e:
-                    t_record["status"] = "failed"
-                    t_record["error"] = str(e)[:200]
-                    record["success"] = False
-                    logger.exception(f"[Scheduler] 任务 {task_name} 失败: {e}")
-
-                t_record["ended_at"] = datetime.now().isoformat(timespec="seconds")
-                record["tasks"].append(t_record)
-        except Exception as e:
-            record["success"] = False
-            record["error"] = str(e)[:200]
-            logger.exception(f"[Scheduler] 整体执行失败: {e}")
-
-        record["ended_at"] = datetime.now().isoformat(timespec="seconds")
-        # 记录历史
         with self._lock:
             self.history.insert(0, record)
-            self.history = self.history[:20]  # 只保留最近 20 次
-        logger.info(f"[Scheduler] 计划任务完成: success={record['success']} "
-                     f"耗时={self._duration(record)}")
-        return record
-
-    @staticmethod
-    def _duration(record: Dict) -> str:
-        try:
-            s = datetime.fromisoformat(record["started_at"])
-            e = datetime.fromisoformat(record["ended_at"])
-            return f"{(e - s).total_seconds():.1f}s"
-        except Exception:
-            return "-"
+            self.history = self.history[:30]
+            self.last_run = record
 
 
 # 全局单例

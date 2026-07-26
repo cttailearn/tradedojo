@@ -11,35 +11,36 @@
       <el-form :model="form" label-width="160px" label-position="right" v-loading="loadingOptions">
         <el-divider content-position="left">时间窗</el-divider>
         <el-row :gutter="16">
-          <el-col :span="12">
+          <el-col :span="8">
             <el-form-item label="训练开始日">
               <el-date-picker v-model="form.start_date" type="date"
                               value-format="YYYY-MM-DD" style="width: 100%"
                               placeholder="选择历史中的一天" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :span="8">
             <el-form-item label="数据结束日">
               <el-date-picker v-model="form.end_date" type="date"
                               value-format="YYYY-MM-DD" style="width: 100%" />
             </el-form-item>
           </el-col>
+          <el-col :span="8">
+            <el-form-item label="时间窗">
+              <el-radio-group v-model="rangePreset" size="default" @change="applyRangePreset">
+                <el-radio-button value="1y">1 年内</el-radio-button>
+                <el-radio-button value="3y">3 年内</el-radio-button>
+                <el-radio-button value="5y">5 年内</el-radio-button>
+              </el-radio-group>
+              <div class="hint" style="margin-top:6px;">点击自动设置训练开始/结束日,默认 1 年内</div>
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="提供历史回看月数">
               <el-input-number v-model="form.lookback_months" :min="1" :max="36" />
-              <span class="hint">展示训练开始日之前 N 个月的数据</span>
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="快捷选择时间段">
-              <el-select v-model="rangePreset" @change="applyRangePreset"
-                         placeholder="预设时段" style="width: 100%;">
-                <el-option label="2020-2021 牛市" value="2020-2021" />
-                <el-option label="2021-2022 大跌" value="2021-2022" />
-                <el-option label="2023-2024 筑底" value="2023-2024" />
-                <el-option label="2024-2025 反弹" value="2024-2025" />
-                <el-option label="最近一年 (近 12 个月)" value="recent12m" />
-              </el-select>
+              <span class="hint">展示训练开始日之前 N 个月的数据(默认 1)</span>
             </el-form-item>
           </el-col>
         </el-row>
@@ -183,15 +184,13 @@ const router = useRouter()
 const loadingOptions = ref(false)
 const starting = ref(false)
 const wallet = ref({ balance: 0 })
-const rangePreset = ref('')
+const rangePreset = ref('1y')
 const options = reactive({ industries: [] })
 
 const DEFAULT_DATES = (() => {
   const today = new Date()
   const oneYearAgo = new Date(today)
   oneYearAgo.setFullYear(today.getFullYear() - 1)
-  const twoYearAgo = new Date(today)
-  twoYearAgo.setFullYear(today.getFullYear() - 2)
   const fmt = (d) => d.toISOString().slice(0, 10)
   return {
     start: fmt(oneYearAgo),
@@ -202,7 +201,7 @@ const DEFAULT_DATES = (() => {
 const form = reactive({
   start_date: DEFAULT_DATES.start,
   end_date: DEFAULT_DATES.end,
-  lookback_months: 6,
+  lookback_months: 1,
   initial_cash: 1_000_000,
   per_trade_amount: 100_000,
   max_positions: 5,
@@ -254,29 +253,22 @@ async function loadOptions() {
 
 function applyRangePreset(v) {
   if (!v) return
-  const presets = {
-    '2020-2021': { start: '2020-01-01', end: '2021-12-31' },
-    '2021-2022': { start: '2021-01-01', end: '2022-12-31' },
-    '2023-2024': { start: '2023-01-01', end: '2024-12-31' },
-    '2024-2025': { start: '2024-01-01', end: '2025-12-31' },
-    'recent12m':  {
-      start: new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10),
-      end:   new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10),
-    },
-  }
-  if (presets[v]) {
-    form.start_date = presets[v].start
-    form.end_date = presets[v].end
-  }
-  rangePreset.value = ''
+  const years = { '1y': 1, '3y': 3, '5y': 5 }[v] || 1
+  const end = new Date()
+  const start = new Date(end)
+  start.setFullYear(end.getFullYear() - years)
+  const fmt = (d) => d.toISOString().slice(0, 10)
+  form.start_date = fmt(start)
+  form.end_date = fmt(end)
+  // 不重置 v,保留用户当前选择,作为可视提示
 }
 
 function reset() {
-  rangePreset.value = ''
+  rangePreset.value = '1y'
   Object.assign(form, {
     start_date: DEFAULT_DATES.start,
     end_date: DEFAULT_DATES.end,
-    lookback_months: 6,
+    lookback_months: 1,
     initial_cash: 1_000_000,
     per_trade_amount: 100_000,
     max_positions: 5,

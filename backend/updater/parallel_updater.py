@@ -19,7 +19,7 @@ import pandas as pd
 
 from config import FetchConfig
 from db.database import get_conn, executemany
-from fetcher.data_fetcher import AKShareFetcher
+from fetcher.manager import fetcher_manager
 from updater.checkpoint import CheckpointManager
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,8 @@ class ParallelKlineUpdater:
     """多线程 K线 更新器(支持断点续传)"""
 
     def __init__(self, max_workers: int = None):
-        self.fetcher = AKShareFetcher()
+        # 用 fetcher_manager(支持 akshare→baostock→tushare 自动 failover)
+        self.fetcher = fetcher_manager.get_fetcher()
         self.max_workers = max_workers or FetchConfig.MAX_WORKERS
         self.fetch_sem = threading.Semaphore(FetchConfig.MAX_CONCURRENT_FETCH)
 
@@ -198,20 +199,31 @@ class ParallelKlineUpdater:
         adjust: str = "qfq",
         only_active: bool = True,
         days_back: int = None,
+        codes: list = None,
     ) -> dict:
         """
         并行更新所有股票 K线
+        :param codes: 指定仅更新这些代码;为 None 时处理全部
         :return: 统计字典
         """
         days_back = days_back or FetchConfig.DEFAULT_DAYS_BACK
 
         # 1. 获取股票列表
         with get_conn() as conn:
-            sql = "SELECT code, name FROM stock_list"
-            if only_active:
-                sql += " WHERE is_active = 1"
-            all_stocks = conn.execute(sql).fetchall()
-        logger.info(f"[目标] {len(all_stocks)} 只股票,复权={adjust},回溯 {days_back} 天")
+            if codes:
+                # 限定到指定代码(单股/批量)
+                placeholders = ",".join(["?"] * len(codes))
+                sql = f"SELECT code, name FROM stock_list WHERE code IN ({placeholders})"
+                if only_active:
+                    sql += " AND is_active = 1"
+                all_stocks = conn.execute(sql, list(codes)).fetchall()
+            else:
+                sql = "SELECT code, name FROM stock_list"
+                if only_active:
+                    sql += " WHERE is_active = 1"
+                all_stocks = conn.execute(sql).fetchall()
+        logger.info(f"[目标] {len(all_stocks)} 只股票,复权={adjust},回溯 {days_back} 天"
+                    f"{' (限定 codes)' if codes else ''}")
 
         # 2. 过滤待处理
         todo = [(c, n) for c, n in all_stocks if self.checkpoint.need_retry(c)]
@@ -982,11 +994,20 @@ class ParallelKlineUpdater:
         self,
         adjust: str = "qfq",
         days_back: int = 10,
+        codes: list = None,
     ) -> dict:
-        """仅对缺失/过期的股票更新日K线"""
+        """仅对缺失/过期的股票更新日K线
+        :param codes: 限定到这些代码;为 None 时处理所有缺失/过期
+        """
         report = self.check_missing()
         missing = report['kline_daily']['missing_stocks']
         outdated = report['kline_daily']['outdated_stocks']
+
+        # 限定到指定代码
+        if codes:
+            cs = set(codes)
+            missing = [(c, n) for c, n in missing if c in cs]
+            outdated = [(c, n, d) for c, n, d in outdated if c in cs]
 
         if not missing and not outdated:
             print("  [OK] 日K线完整,无需更新")
@@ -1004,4 +1025,4 @@ class ParallelKlineUpdater:
         cp.save_snapshot()
         print(f"  重置 {len(missing) + len(outdated)} 只股票断点")
 
-        return self.update_all(adjust=adjust, days_back=days_back)
+        return self.update_all(adjust=adjust, days_back=days_back, codes=codes)

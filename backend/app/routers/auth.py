@@ -22,7 +22,7 @@ def login(payload: LoginRequest):
             detail="账号或密码错误",
         )
     update_last_login(user["id"])
-    token = create_access_token(user["username"])
+    token = create_access_token(user["username"], extra={"kind": "admin"})
     return Resp(data={
         "access_token": token,
         "token_type": "bearer",
@@ -42,7 +42,7 @@ def login_form(form_data: OAuth2PasswordRequestForm = Depends()):
             headers={"WWW-Authenticate": "Bearer"},
         )
     update_last_login(user["id"])
-    token = create_access_token(user["username"])
+    token = create_access_token(user["username"], extra={"kind": "admin"})
     return Resp(data={
         "access_token": token,
         "token_type": "bearer",

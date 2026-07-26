@@ -52,6 +52,11 @@ export const schedulerApi = {
   updateConfig: (config) => api.put('/scheduler/config', config),
   trigger: () => api.post('/scheduler/trigger'),
   history: (limit = 10) => api.get('/scheduler/history', { params: { limit } }),
+
+  // 新端点:按数据类型操作
+  listJobs: () => api.get('/scheduler/jobs'),
+  updateJob: (task, body) => api.put(`/scheduler/jobs/${task}`, body),
+  triggerJob: (task) => api.post(`/scheduler/jobs/${task}/trigger`),
 }
 
 export const sourcesApi = {

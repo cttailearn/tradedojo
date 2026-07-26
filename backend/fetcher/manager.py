@@ -53,8 +53,9 @@ class FetcherManager:
                 reason = "包未安装" if name != "tushare" else "未配置 TUSHARE_TOKEN"
                 logger.info(f"[FetcherManager] 跳过 {name}: {reason}")
 
-        # 默认主源:akshare > baostock > tushare
-        for name in ("akshare", "baostock", "tushare"):
+        # 默认主源:baostock > akshare > tushare
+        # (2026-07 akShare 数据源被本机网络/VPN 拦截,改 baostock 优先)
+        for name in ("baostock", "akshare", "tushare"):
             if name in self._fetchers:
                 self._primary = name
                 break

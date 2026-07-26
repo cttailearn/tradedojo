@@ -71,6 +71,40 @@ def init_db(verbose: bool = True) -> None:
             CREATE INDEX IF NOT EXISTS idx_action_log_target ON admin_action_log(target_type, target_id);
         """)
 
+        # ====== 按数据类型重构(stock_list 增强列 + scheduler_job) ======
+        # stock_list 增强列(由 stock_enrich updater 写入,旧库通过 ensure_col 幂等追加)
+        ensure_col("stock_list", "total_share     REAL",         "total_share")
+        ensure_col("stock_list", "float_share     REAL",         "float_share")
+        ensure_col("stock_list", "industry_detail TEXT",         "industry_detail")
+        ensure_col("stock_list", "last_enriched_at TEXT",        "last_enriched_at")
+
+        # 定时调度 job 配置表(每类数据一个 job,可独立启停/改 cron/改参数)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS scheduler_job (
+                task         TEXT PRIMARY KEY,
+                cron         TEXT NOT NULL,
+                enabled      INTEGER NOT NULL DEFAULT 1,
+                params_json  TEXT NOT NULL DEFAULT '{}',
+                updated_at   TEXT DEFAULT (datetime('now', 'localtime')),
+                last_run_at  TEXT,
+                last_status  TEXT
+            );
+        """)
+
+        # 种子:把 updater.types.DEFAULT_JOBS 写入 scheduler_job(已存在跳过)
+        try:
+            from updater.types import DEFAULT_JOBS
+            import json as _json
+            existing = {r[0] for r in conn.execute("SELECT task FROM scheduler_job").fetchall()}
+            for task, cron, enabled, params in DEFAULT_JOBS:
+                if task not in existing:
+                    conn.execute(
+                        "INSERT INTO scheduler_job(task, cron, enabled, params_json) VALUES (?,?,?,?)",
+                        (task, cron, 1 if enabled else 0, _json.dumps(params, ensure_ascii=False)),
+                    )
+        except Exception as e:
+            print(f"[init_db] seed scheduler_job failed: {e}")
+
     if verbose:
         print(f"[DB] 数据库已初始化: {DB_PATH}")
 

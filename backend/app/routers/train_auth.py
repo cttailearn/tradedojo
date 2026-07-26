@@ -316,12 +316,12 @@ def redeem(req: RedeemReq, user: dict = Depends(get_current_train_user)):
     code = req.code.strip()
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, amount, is_used, used_by, revoked "
+            "SELECT amount, is_used, used_by, revoked "
             "FROM redeem_code WHERE code = ?", (code,)
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="兑换码不存在")
-        rid, amount, is_used, used_by, revoked = row
+        amount, is_used, used_by, revoked = row
         if revoked:
             raise HTTPException(status_code=400, detail="兑换码已被作废")
         if is_used or used_by is not None:

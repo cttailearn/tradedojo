@@ -1,54 +1,34 @@
-# Python
+# ===== Python =====
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
+*.py[cod]
 *.egg-info/
 .venv/
 venv/
-.uv-cache/
+.uv/
+.pytest_cache/
 
-# uv 生成的 lock 文件(可选提交)
-# uv.lock
+# ===== 运行时数据与日志 =====
+data/
+logs/
+*.log
+*.err
+*.out
+_q.txt
+backend_*
+b_*.txt
+update_all.*
 
-# IDE
-.vscode/
-.idea/
-*.swp
-
-# 数据 & 日志 (运行时生成)
-backend/data/stock.db
-backend/data/stock.db-shm
-backend/data/stock.db-wal
-backend/data/checkpoints/
-backend/logs/*.log
-
-# OS
-.DS_Store
-Thumbs.db
-
-# 前端调试
-frontend/.cache/
-frontend/dist/
-frontend/node_modules/
-frontend/.vite/
-frontend/npm-debug.log*
-frontend/yarn-error.log*
-
-# TradeDojo 项目本地配置
-.env
-.env.local
+# ===== Frontend 构建产物 =====
+node_modules/
+dist/
 *.local
 
-# 临时凭据 (JWT token 等),严禁提交
-backend/admin_tok.tmp
-backend/admin_tok.*.tmp
-backend/Kronos-base/model.safetensors
+# ===== Vendored 资源(大模型权重/第三方,体积大) =====
+vendor/
+Kronos-base/
 
-# 测试用的截图/日志(不入库)
-screenshots/
-screenshots/*.png
-screenshots/*.log
-screenshots/*.py
-screenshots/*.mjs
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

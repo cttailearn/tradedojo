@@ -25,13 +25,9 @@
           <el-icon><DataLine /></el-icon>
           <template #title>K线查询</template>
         </el-menu-item>
-        <el-menu-item index="/admin/tasks">
-          <el-icon><Download /></el-icon>
-          <template #title>数据更新</template>
-        </el-menu-item>
         <el-menu-item index="/admin/scheduler">
           <el-icon><AlarmClock /></el-icon>
-          <template #title>定时调度</template>
+          <template #title>数据任务</template>
         </el-menu-item>
         <el-menu-item index="/admin/backtest">
           <el-icon><TrendCharts /></el-icon>

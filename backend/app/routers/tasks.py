@@ -1,68 +1,72 @@
+﻿"""
+后台数据更新任务路由 —— 已重构为按数据类型路由。
+旧 task 字符串("kline_daily" / "stock_list" / "index" / "enrich" / "daily_smart")
+通过 registry.resolve_task() 自动映射到新 TaskType,无需修改前端旧调用。
 """
-数据更新任务 API
-- 提交后台任务(更新股票列表 / K线 / 指数 / 全量)
-- 查询任务状态 + 实时日志尾部
-"""
+import logging
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from app.deps import require_admin
-from app.models import UpdateTaskRequest
 from app.task_manager import task_manager
+from updater.registry import REGISTER, resolve_task
+from updater.types import TaskType
 
-router = APIRouter(prefix="/api/tasks", tags=["数据更新"], dependencies=[Depends(require_admin)])
-
-
-@router.post("/update")
-def trigger_update(req: UpdateTaskRequest, progress_callback=None):
-    """触发一个后台更新任务"""
-    task = req.task
-    adjust = req.adjust
-    days = req.days
-    workers = req.workers
-    full_init = req.full_init
-    limit = req.limit
-
-    def _run_kline_daily():
-        from updater.parallel_updater import ParallelKlineUpdater
-        u = ParallelKlineUpdater(max_workers=workers)
-        return u.update_all(adjust=adjust, days_back=days, only_active=True)
-
-    def _run_stock_list():
-        from updater.parallel_updater import ParallelKlineUpdater
-        u = ParallelKlineUpdater()
-        return u.update_stock_list()
-
-    def _run_index():
-        from updater.parallel_updater import ParallelKlineUpdater
-        u = ParallelKlineUpdater()
-        return u.update_index()
-
-    def _run_enrich():
-        from updater.parallel_updater import ParallelKlineUpdater
-        u = ParallelKlineUpdater()
-        return u.enrich_stock_info(enrich_workers=workers, profile_limit=limit)
-
-    def _run_daily_smart():
-        from updater.parallel_updater import ParallelKlineUpdater
-        u = ParallelKlineUpdater(max_workers=workers)
-        return u.update_daily_smart_only(adjust=adjust, days_back=days)
-
-    runners = {
-        "kline_daily": ("K线(日)", _run_kline_daily),
-        "stock_list": ("股票列表", _run_stock_list),
-        "index": ("主要指数", _run_index),
-        "enrich": ("信息丰富", _run_enrich),
-        "daily_smart": ("智能增量", _run_daily_smart),
-    }
-    if task not in runners:
-        raise HTTPException(status_code=400, detail=f"未知任务: {task},可选 {list(runners)}")
-
-    name, runner = runners[task]
-    task_id = task_manager.submit(name, runner)
-    return {"task_id": task_id, "task_name": name, "status": "pending"}
+router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+logger = logging.getLogger(__name__)
 
 
-@router.get("/{task_id}")
+# ---------- 请求模型 ----------
+class UpdateTaskRequest(BaseModel):
+    """
+    task: TaskType 值或旧别名,均自动识别
+    params: 由 registry 中的 ParamModel 校验;旧字段(adjust/days/workers/limit/full_init)
+            也会被各 updater 的 ParamModel 兼容接收
+    """
+    task: str = Field(..., description="任务类型,如 stock_list / index_daily / kline_daily / stock_enrich")
+    params: dict = Field(default_factory=dict)
+
+
+class ResetCheckpointRequest(BaseModel):
+    task: str = Field(..., description="要重置断点的任务类型")
+
+
+# ---------- 触发手动更新 ----------
+@router.post("/update", dependencies=[Depends(require_admin)])
+def trigger_update(req: UpdateTaskRequest):
+    """手动触发一次更新任务"""
+    try:
+        task_type, defaults = resolve_task(req.task)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if task_type not in REGISTER:
+        raise HTTPException(status_code=501, detail=f"任务 {task_type.value} 未实现")
+
+    UpdaterCls, ParamModel = REGISTER[task_type]
+    # 合并默认参数 + 用户参数(用户覆盖默认)
+    merged_params = {**defaults, **(req.params or {})}
+
+    # 字段名兼容:旧字段 full_init -> 强转 full_refresh
+    if task_type == TaskType.STOCK_LIST and "full_init" in merged_params:
+        merged_params.setdefault("full_refresh", merged_params.pop("full_init"))
+
+    # 用 updater 实例执行(由 task_manager 注入 progress_callback)
+    name = f"{task_type.value}_{req.task}"
+    try:
+        updater = UpdaterCls(merged_params)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"参数错误: {e}")
+
+    task_id = task_manager.submit(name, updater.run)
+    logger.info(f"提交任务: {name} ({task_id}) task_type={task_type.value}")
+    return {"task_id": task_id, "task": task_type.value, "task_type": task_type.value}
+
+
+# ---------- 任务状态查询 ----------
+@router.get("/{task_id}", dependencies=[Depends(require_admin)])
 def get_task(task_id: str):
     rec = task_manager.get(task_id)
     if not rec:
@@ -70,18 +74,39 @@ def get_task(task_id: str):
     return rec
 
 
-@router.get("")
-def list_tasks(limit: int = Query(20, ge=1, le=100)):
-    return {"items": task_manager.list_recent(limit=limit)}
+@router.get("", dependencies=[Depends(require_admin)])
+def list_recent_tasks(
+    task_type: Optional[str] = Query(None, description="按任务类型过滤"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """按 task_type 过滤最近任务(供前端按 Tab 分组展示)"""
+    recs = task_manager.list_recent(limit=limit * 3)
+    if task_type:
+        recs = [r for r in recs if r["task_name"].startswith(f"{task_type}_")][:limit]
+    else:
+        recs = recs[:limit]
+    return {"items": recs}
 
 
-@router.post("/reset-checkpoint")
-def reset_checkpoint(payload: dict, _user=Depends(require_admin)):
-    """重置某个任务的断点(慎用!)"""
-    from updater.checkpoint import CheckpointManager
-    task_name = payload.get("task")
-    if not task_name:
-        raise HTTPException(status_code=400, detail="缺少参数 task")
-    cp = CheckpointManager(task_name)
-    cp.reset()
-    return {"message": f"已重置断点: {task_name}"}
+# ---------- 断点重置 ----------
+@router.post("/reset-checkpoint", dependencies=[Depends(require_admin)])
+def reset_checkpoint(req: ResetCheckpointRequest):
+    """
+    重置指定任务的 checkpoint(下次更新将重新拉取全部数据)。
+    主要用于 stock_list / index_daily / kline_daily。
+    """
+    try:
+        from updater.checkpoint import CheckpointManager
+        from db.database import get_conn
+
+        task_type, _ = resolve_task(req.task)
+        # 删除该任务类型的所有 checkpoint 行
+        with get_conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM checkpoint WHERE task_type = ?",
+                (task_type.value,),
+            )
+            deleted = cur.rowcount
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"task": task_type.value, "deleted_rows": deleted}

@@ -40,18 +40,46 @@ def list_stocks(
     total = query_one(f"SELECT COUNT(*) FROM stock_list {where_sql}", params)[0]
     offset = (page - 1) * page_size
     rows = query_all(
-        f"""SELECT code, name, industry, market, list_date, is_active
+        f"""SELECT code, name, industry, market, list_date, is_active,
+                   last_enriched_at
             FROM stock_list {where_sql}
             ORDER BY code ASC LIMIT ? OFFSET ?""",
         params + [page_size, offset],
     )
-    items = [
-        {
-            "code": r[0], "name": r[1], "industry": r[2],
-            "market": r[3], "list_date": r[4], "is_active": r[5],
-        }
-        for r in rows
-    ]
+    # 批量查 K 线汇总(一次 SQL,避免 N+1)
+    codes = [r[0] for r in rows]
+    kline_map = {}
+    if codes:
+        placeholders = ",".join(["?"] * len(codes))
+        for kr in query_all(
+            f"SELECT code, COUNT(*), MAX(trade_date) "
+            f"FROM kline_daily WHERE code IN ({placeholders}) GROUP BY code",
+            codes,
+        ):
+            kline_map[kr[0]] = {"count": kr[1], "last_date": kr[2]}
+
+    items = []
+    for r in rows:
+        code, name, industry, market, list_date, is_active, last_enriched_at = r
+        k = kline_map.get(code, {"count": 0, "last_date": None})
+        # 计算完整度打分(0~4):4 个维度是否就绪
+        score = 0
+        score += 1 if (industry and str(industry).strip()) else 0
+        score += 1 if list_date else 0
+        score += 1 if k["count"] > 0 else 0
+        score += 1 if last_enriched_at else 0
+        items.append({
+            "code": code, "name": name, "industry": industry,
+            "market": market, "list_date": list_date, "is_active": is_active,
+            # 完整度字段
+            "kline_count": k["count"],
+            "kline_last_date": k["last_date"],
+            "has_industry": bool(industry and str(industry).strip()),
+            "has_list_date": bool(list_date),
+            "has_kline": k["count"] > 0,
+            "last_enriched_at": last_enriched_at,
+            "integrity_score": score,    # 0=缺 1=缺基础 2=基础齐 3=含 K线 4=全
+        })
     return {"total": total, "page": page, "page_size": page_size, "items": items}
 
 

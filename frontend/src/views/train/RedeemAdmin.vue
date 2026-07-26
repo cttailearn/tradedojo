@@ -1,11 +1,6 @@
 <template>
   <div class="redeem-admin">
-    <el-alert type="warning" :closable="false" show-icon style="margin-bottom: 16px;">
-      <template #title>需要管理后台 admin token</template>
-      此页面通过 <code>/api/train/admin/...</code> 生成兑换码,要求请求里带 admin 账号的 JWT。
-      如果你直接访问训练端,需要先在另一个标签登录 admin 后再回来刷新本页。
-      <span v-if="adminInfo">已验证身份: {{ adminInfo.viewer }}</span>
-    </el-alert>
+    <!-- 顶部提示已移除 -->
 
     <div class="page-card">
       <h3 class="page-title">兑换码生成 (管理员)</h3>
@@ -88,8 +83,12 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { trainApi } from '@/api/modules'
+import { useAuthStore } from '@/stores/auth'
+
+const router = useRouter()
 
 const form = reactive({ amount: 10000, count: 5, note: '' })
 const generating = ref(false)
@@ -99,6 +98,30 @@ const showNew = ref([])
 const list = ref([])
 const filterText = ref('')
 const adminInfo = ref(null)
+const hasAdminToken = ref(false)
+const adminWho = ref('')
+
+// 与 UsersAdmin 一致:同时校验 store + localStorage 防止状态不同步
+function checkTokens() {
+  const auth = useAuthStore()
+  const storeToken = auth.token || ''
+  const lsToken = localStorage.getItem('stock_admin_token') || ''
+  const token = storeToken || lsToken
+  if (!token) { hasAdminToken.value = false; return }
+  hasAdminToken.value = true
+  if (!storeToken && lsToken) {
+    try {
+      const u = JSON.parse(localStorage.getItem('stock_admin_user') || 'null')
+      auth.setAuth(lsToken, u || { username: 'admin' })
+    } catch {}
+  }
+  try {
+    const u = JSON.parse(localStorage.getItem('stock_admin_user') || 'null')
+    adminWho.value = u?.username || 'admin'
+  } catch { adminWho.value = 'admin' }
+}
+
+function goAdminLogin() { router.push('/admin/login') }
 
 const filteredList = computed(() => {
   const t = (filterText.value || '').trim().toLowerCase()
@@ -155,7 +178,10 @@ function copyAll() {
   copy(newCodes.value.join('\n'))
 }
 
-onMounted(refreshList)
+onMounted(() => {
+  checkTokens()
+  if (hasAdminToken.value) refreshList()
+})
 </script>
 
 <style scoped>

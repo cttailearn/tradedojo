@@ -102,11 +102,32 @@
                 <el-icon :size="48" color="#c0c4cc"><WarningFilled /></el-icon>
               </template>
               <div class="empty-hint">
-                可能原因:① 训练开始日是节假日 ② 该股票停牌
-                <br />可点击"推进 1 天"继续揭示下一个交易日
+                可能原因:① 训练开始日是节假日 ② 该股票停牌 ③ <b>该股尚未在系统中维护 K 线</b>
+                <br />可点击下方按钮一次性补全该股 K 线,或点击"推进 1 天"继续揭示下一个交易日
               </div>
+              <el-button type="primary" plain :loading="loadingKlineUpdate"
+                @click="triggerKlineUpdate" style="margin-top:8px;">
+                <el-icon><Download /></el-icon>立即补全 K线
+              </el-button>
             </el-empty>
           </div>
+          <!-- 数据不足提示(已有 K线但 MA 画不出) -->
+          <el-alert
+            v-else-if="klineBars.length && klineBars.length < 60"
+            type="warning" :closable="false" show-icon
+            style="margin: 6px 0;"
+          >
+            <template #title>当前 K线数据较少 ({{ klineBars.length }} 根),均线尚未完整</template>
+            <div>
+              <span style="color:#909399; font-size:12px;">
+                MA5 需 ≥5 根 · MA10 需 ≥10 根 · MA20 需 ≥20 根 · MA30 需 ≥30 根 · MA60 需 ≥60 根
+              </span>
+              <el-button type="primary" size="small" :loading="loadingKlineUpdate"
+                @click="triggerKlineUpdate" style="margin-left: 12px;">
+                <el-icon><Download /></el-icon>补全该股 K线
+              </el-button>
+            </div>
+          </el-alert>
         </div>
 
         <div class="page-card" style="margin-top: 16px;">
@@ -128,15 +149,21 @@
                   <el-input-number v-model="buyForm.amount" :min="1000" :step="10000"
                                    style="width: 100%" />
                 </el-form-item>
-                <el-form-item label="快捷选择">
+                <el-form-item label="快捷选择 (仓位 / 自定义股数)">
                   <el-radio-group v-model="buyPreset" size="small" @change="applyBuyPreset">
-                    <el-radio-button value="50000">5万</el-radio-button>
-                    <el-radio-button value="100000">10万</el-radio-button>
-                    <el-radio-button value="200000">20万</el-radio-button>
-                    <el-radio-button value="cash_half">半仓</el-radio-button>
+                    <el-radio-button value="cash_quarter">1/4 仓</el-radio-button>
+                    <el-radio-button value="cash_half">1/2 仓</el-radio-button>
                     <el-radio-button value="cash_all">全仓</el-radio-button>
+                    <el-radio-button value="custom">自定义股</el-radio-button>
                   </el-radio-group>
-                  <div class="preset-hint">提示:全仓会预留 5% 资金用于手续费</div>
+                  <div v-if="buyPreset === 'custom'" style="margin-top: 8px;">
+                    <el-input-number v-model="customBuyShares" :min="100" :step="100"
+                                     :max="100000" style="width: 200px;" />
+                    <span style="margin-left: 8px; color: #909399; font-size: 12px;">
+                      股 (100 整数倍) · 约 ¥ {{ money((customBuyShares || 0) * currentPrice) }} 元
+                    </span>
+                  </div>
+                  <div class="preset-hint">提示:全仓会预留 5% 资金用于手续费;自定义股按 100 整数倍</div>
                 </el-form-item>
                 <el-form-item label="限价 (可选,默认按收盘价)">
                   <el-input-number v-model="buyForm.price" :min="0.01" :step="0.01"
@@ -162,12 +189,22 @@
                   <el-input-number v-model="sellForm.quantity" :min="100" :step="100"
                                    style="width: 100%" />
                 </el-form-item>
-                <el-form-item label="快捷选择">
+                <el-form-item label="快捷选择 (仓位 / 自定义股数)">
                   <el-radio-group v-model="sellPreset" size="small" @change="applySellPreset">
+                    <el-radio-button value="eighth">1/8</el-radio-button>
                     <el-radio-button value="quarter">1/4</el-radio-button>
+                    <el-radio-button value="third">1/3</el-radio-button>
                     <el-radio-button value="half">1/2</el-radio-button>
                     <el-radio-button value="all">全部</el-radio-button>
+                    <el-radio-button value="custom">自定义股</el-radio-button>
                   </el-radio-group>
+                  <div v-if="sellPreset === 'custom'" style="margin-top: 8px;">
+                    <el-input-number v-model="customSellShares" :min="100" :step="100"
+                                     :max="myPositionQty" style="width: 200px;" />
+                    <span style="margin-left: 8px; color: #909399; font-size: 12px;">
+                      股 (100 整数倍,最大 {{ myPositionQty }})
+                    </span>
+                  </div>
                 </el-form-item>
                 <el-form-item label="限价 (可选,默认按收盘价)">
                   <el-input-number v-model="sellForm.price" :min="0.01" :step="0.01"
@@ -255,7 +292,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
-import { trainApi } from '@/api/modules'
+import { trainApi, tasksApi } from '@/api/modules'
 
 const route = useRoute()
 const router = useRouter()
@@ -268,10 +305,13 @@ const loadedSession = ref(false)
 const loading = ref(false)
 const advancing = ref(false)
 const trading = ref(false)
+const loadingKlineUpdate = ref(false)
 const period = ref('daily')
 const tradeTab = ref('buy')
 const buyPreset = ref('')
 const sellPreset = ref('')
+const customBuyShares = ref(100)
+const customSellShares = ref(100)
 const buyForm = reactive({ amount: 100000, price: null })
 const sellForm = reactive({ quantity: 100, price: null })
 
@@ -371,11 +411,21 @@ function estimateFees(side) {
 
 function applyBuyPreset(v) {
   if (!v) return
-  if (v === 'cash_half') {
-    buyForm.amount = Math.floor((session.value?.cash || 0) / 2 / 1000) * 1000
+  const cash = session.value?.cash || 0
+  const price = currentPrice.value || 0
+  if (v === 'cash_quarter') {
+    // 1/4 仓位
+    buyForm.amount = Math.floor((cash * 0.25) / 1000) * 1000
+  } else if (v === 'cash_half') {
+    buyForm.amount = Math.floor((cash * 0.5) / 1000) * 1000
   } else if (v === 'cash_all') {
     // 全仓:留 5% 给手续费与最低限价余量
-    buyForm.amount = Math.floor(((session.value?.cash || 0) * 0.95) / 1000) * 1000
+    buyForm.amount = Math.floor((cash * 0.95) / 1000) * 1000
+  } else if (v === 'custom') {
+    // 自定义股:按 100 整数倍 → 折算金额(向上取整到 100 元)
+    const shares = Math.max(100, Math.round(customBuyShares.value / 100) * 100)
+    customBuyShares.value = shares
+    buyForm.amount = Math.ceil((shares * price) / 100) * 100
   } else {
     buyForm.amount = Number(v)
   }
@@ -383,10 +433,33 @@ function applyBuyPreset(v) {
 
 function applySellPreset(v) {
   if (!v) return
-  if (v === 'quarter') sellForm.quantity = Math.max(100, Math.floor(myPositionQty.value * 0.25 / 100) * 100)
-  else if (v === 'half') sellForm.quantity = Math.max(100, Math.floor(myPositionQty.value * 0.5 / 100) * 100)
-  else if (v === 'all') sellForm.quantity = myPositionQty.value
+  const qty = myPositionQty.value || 0
+  const r100 = (n) => Math.max(100, Math.floor(n / 100) * 100)
+  if (v === 'eighth') sellForm.quantity = r100(qty * 0.125)
+  else if (v === 'quarter') sellForm.quantity = r100(qty * 0.25)
+  else if (v === 'third') sellForm.quantity = r100(qty / 3)
+  else if (v === 'half') sellForm.quantity = r100(qty * 0.5)
+  else if (v === 'all') sellForm.quantity = qty
+  else if (v === 'custom') {
+    const shares = Math.max(100, Math.round(customSellShares.value / 100) * 100)
+    customSellShares.value = Math.min(shares, qty)
+    sellForm.quantity = customSellShares.value
+  }
 }
+
+// 自定义股数变化时,实时同步到 buyForm.amount / sellForm.quantity
+watch([customBuyShares, currentPrice], () => {
+  if (buyPreset.value === 'custom') {
+    const shares = Math.max(100, Math.round(customBuyShares.value / 100) * 100)
+    buyForm.amount = Math.ceil((shares * (currentPrice.value || 0)) / 100) * 100
+  }
+})
+watch([customSellShares, myPositionQty], () => {
+  if (sellPreset.value === 'custom') {
+    const shares = Math.max(100, Math.round(customSellShares.value / 100) * 100)
+    sellForm.quantity = Math.min(shares, myPositionQty.value || 0)
+  }
+})
 
 async function loadSession() {
   loading.value = true
@@ -411,6 +484,37 @@ async function loadKline() {
   }
 }
 
+async function triggerKlineUpdate() {
+  const code = session.value?.code
+  if (!code) {
+    ElMessage.error('缺少股票代码')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将拉取 [${code} ${session.value?.name || ''}] 1 年的日 K线数据(smart 模式只补缺失/过期)。`,
+      '补全 K线', { type: 'info' },
+    )
+  } catch { return }
+  loadingKlineUpdate.value = true
+  try {
+    const r = await tasksApi.trigger({
+      task: 'kline_daily',
+      params: {
+        mode: 'smart', adjust: 'qfq', days_back: 365,
+        workers: 4, codes: [code],
+      },
+    })
+    ElMessage.success(
+      `已提交 ${code} 的 K线更新任务,任务ID: ${r.task_id || '-'},完成后会自动刷新`,
+    )
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    loadingKlineUpdate.value = false
+  }
+}
+
 async function loadEquity() {
   try {
     const res = await trainApi.equity(id.value)
@@ -427,15 +531,20 @@ function renderKline() {
     klineChart.clear()
     return
   }
+
   const dates = bars.map((b) => b.trade_date)
   const ohlc = bars.map((b) => [b.open, b.close, b.low, b.high])
+
+  // 成交量(A股红涨绿跌)
   const volumes = bars.map((b) => ({
     value: b.volume,
-    // A 股习惯:红涨绿跌
-    itemStyle: { color: b.close >= b.open ? '#ef232a' : '#14b066' },
+    itemStyle: {
+      color: b.close >= b.open ? '#ef232a' : '#14b066',
+      opacity: 0.85,
+    },
   }))
 
-  // 移动均线 MA5 / MA10 / MA20
+  // 5 条均线 MA5 / MA10 / MA20 / MA30 / MA60
   const closes = bars.map((b) => Number(b.close))
   const calcMA = (n) =>
     closes.map((_, i) => {
@@ -444,83 +553,182 @@ function renderKline() {
       for (let k = i - n + 1; k <= i; k++) s += closes[k]
       return +(s / n).toFixed(2)
     })
-  const ma5 = calcMA(5)
+  const ma5  = calcMA(5)
   const ma10 = calcMA(10)
   const ma20 = calcMA(20)
+  const ma30 = calcMA(30)
+  const ma60 = calcMA(60)
 
-  // 训练起点垂直标记(用 markLine)
+  // 最新价标牌
+  const lastBar = bars[bars.length - 1]
+  const lastClose = Number(lastBar.close)
+  const lastDate = lastBar.trade_date
+  const lastUp = lastBar.close >= lastBar.open
+
+  // 训练起点垂直虚线
   const startDate = session.value?.start_date
-  const markStart = startDate && dates.includes(startDate)
-    ? {
-        symbol: 'none',
-        data: [{ xAxis: startDate, label: { show: true, position: 'end', formatter: '训练起点', color: '#e6a23c' } }],
-        lineStyle: { color: '#e6a23c', type: 'dashed', width: 1.5 },
-      }
-    : { symbol: 'none', data: [] }
+  const startMark = (startDate && dates.includes(startDate))
+    ? [{ xAxis: startDate, name: '训练起点' }]
+    : []
+
+  // MA 值格式化辅助
+  const fmtMA = (v) => (v === '-' || v == null ? '-' : Number(v).toFixed(2))
 
   klineChart.setOption({
+    backgroundColor: '#0a0e1a',
+    animation: false,
     tooltip: {
-      trigger: 'axis', axisPointer: { type: 'cross', link: [{ xAxisIndex: 'all' }] },
+      trigger: 'axis',
+      axisPointer: {
+        type: 'cross',
+        crossStyle: { color: '#aaa', type: 'dashed' },
+        lineStyle: { color: '#aaa', type: 'dashed' },
+      },
+      backgroundColor: 'rgba(20, 30, 50, 0.95)',
+      borderColor: '#444',
+      textStyle: { color: '#e0e0e0', fontSize: 12 },
+      padding: [8, 12],
       formatter: (params) => {
         const k = params.find((p) => p.seriesType === 'candlestick')
         if (!k) return ''
         const idx = k.dataIndex
         const bar = bars[idx]
-        const chg = bar.close >= bar.open
-        const ma = (v) => (v === '-' || v == null ? '-' : v.toFixed(2))
-        return `<div style="font-size:12px; line-height:1.7;">
-          <b>${bar.trade_date}</b> ${chg ? '<span style="color:#ef232a">↑</span>' : '<span style="color:#14b066">↓</span>'}<br/>
-          开 ${bar.open} 收 ${bar.close}<br/>
-          高 ${bar.high} 低 ${bar.low}<br/>
-          量 ${(bar.volume / 10000).toFixed(1)}万手<br/>
-          换手 ${bar.turnover_rate || 0}%<br/>
-          <span style="color:#ff9800">MA5</span> ${ma(ma5[idx])}
-          <span style="color:#2196f3">MA10</span> ${ma(ma10[idx])}
-          <span style="color:#9c27b0">MA20</span> ${ma(ma20[idx])}
+        const chg = bar.close - bar.open
+        const chgPct = bar.open ? ((chg / bar.open) * 100).toFixed(2) : '0.00'
+        const chgColor = chg >= 0 ? '#ef232a' : '#14b066'
+        const arrow = chg >= 0 ? '▲' : '▼'
+        return `<div style="line-height:1.7;">
+          <div style="font-weight:bold; margin-bottom:6px; color:#fff; font-size:13px;">
+            ${bar.trade_date} <span style="color:${chgColor}; font-size:11px;">${arrow}</span>
+          </div>
+          <div><span style="color:#888;">开</span> <b style="color:#fff;">${bar.open}</b>
+            &nbsp;<span style="color:#888;">收</span> <b style="color:${chgColor};">${bar.close}</b></div>
+          <div><span style="color:#888;">高</span> <b style="color:#ef232a;">${bar.high}</b>
+            &nbsp;<span style="color:#888;">低</span> <b style="color:#14b066;">${bar.low}</b></div>
+          <div><span style="color:#888;">涨跌</span> <b style="color:${chgColor};">
+            ${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chg >= 0 ? '+' : ''}${chgPct}%)</b></div>
+          <div><span style="color:#888;">成交量</span> <b style="color:#fff;">${(bar.volume / 10000).toFixed(1)}万手</b>
+            &nbsp;<span style="color:#888;">换手</span> <b style="color:#fff;">${bar.turnover_rate || 0}%</b></div>
+          <div style="border-top:1px solid #444; margin-top:4px; padding-top:4px; font-size:11px;">
+            <span style="color:#ff9800;">MA5</span> <span style="color:#fff;">${fmtMA(ma5[idx])}</span> &nbsp;
+            <span style="color:#ff5722;">MA10</span> <span style="color:#fff;">${fmtMA(ma10[idx])}</span> &nbsp;
+            <span style="color:#2196f3;">MA20</span> <span style="color:#fff;">${fmtMA(ma20[idx])}</span>
+          </div>
+          <div style="font-size:11px;">
+            <span style="color:#9c27b0;">MA30</span> <span style="color:#fff;">${fmtMA(ma30[idx])}</span> &nbsp;
+            <span style="color:#ffc107;">MA60</span> <span style="color:#fff;">${fmtMA(ma60[idx])}</span>
+          </div>
         </div>`
       },
     },
     legend: {
-      data: ['K线', 'MA5', 'MA10', 'MA20'],
-      top: 0, left: 'center',
-      textStyle: { fontSize: 11 },
-      itemWidth: 14, itemHeight: 8,
+      data: ['K线', 'MA5', 'MA10', 'MA20', 'MA30', 'MA60'],
+      top: 4, left: 'center',
+      textStyle: { color: '#ccc', fontSize: 11 },
+      itemWidth: 12, itemHeight: 8,
+      itemGap: 14,
     },
     grid: [
-      { left: 56, right: 20, top: 30, height: '60%' },
-      { left: 56, right: 20, top: '74%', height: '14%' },
+      { left: 50, right: 60, top: 30, height: '60%' },
+      { left: 50, right: 60, top: '74%', height: '18%' },
     ],
     xAxis: [
       {
         type: 'category', data: dates, scale: true, boundaryGap: false,
-        axisLabel: { show: false }, axisLine: { onZero: false },
-        markLine: markStart,
+        axisLine: { lineStyle: { color: '#555' } },
+        axisLabel: { show: false },
+        splitLine: { show: false },
+        axisTick: { show: false },
       },
-      { type: 'category', data: dates, gridIndex: 1, axisLabel: { show: false } },
+      {
+        type: 'category', data: dates, gridIndex: 1,
+        axisLine: { lineStyle: { color: '#555' } },
+        axisTick: { show: false },
+        axisLabel: {
+          color: '#aaa', fontSize: 10,
+          formatter: (val) => {
+            // 月初显示完整 MM-DD,平时只显示 DD
+            try {
+              const d = new Date(val)
+              if (d.getDate() <= 3) return val.slice(5)
+            } catch {}
+            return val.slice(8)
+          },
+        },
+      },
     ],
     yAxis: [
-      { scale: true, splitArea: { show: true },
-        axisLabel: { color: '#909399' } },
-      { scale: true, gridIndex: 1, splitNumber: 2,
-        axisLabel: { show: false }, axisLine: { show: false }, splitLine: { show: false } },
+      {
+        scale: true,
+        position: 'right',
+        axisLine: { lineStyle: { color: '#555' } },
+        axisLabel: { color: '#aaa', fontSize: 10 },
+        splitLine: { lineStyle: { color: '#1f2937', type: 'dashed' } },
+      },
+      {
+        scale: true, gridIndex: 1, position: 'right',
+        axisLine: { lineStyle: { color: '#555' } },
+        axisLabel: {
+          color: '#aaa', fontSize: 10,
+          formatter: (v) => v >= 10000 ? `${(v / 10000).toFixed(0)}万` : v,
+        },
+        splitNumber: 2, splitLine: { show: false },
+      },
     ],
     dataZoom: [
-      { type: 'inside', xAxisIndex: [0, 1], start: 60, end: 100 },
-      { show: true, xAxisIndex: [0, 1], type: 'slider', bottom: 10,
-        start: 60, end: 100, height: 18 },
+      { type: 'inside', xAxisIndex: [0, 1] },
+      {
+        show: true, xAxisIndex: [0, 1], type: 'slider',
+        bottom: 4, height: 18,
+        start: 0, end: 100,           // 默认全量显示(旧版 start:60 end:100 导致只看到 1-2 根)
+        backgroundColor: 'rgba(40, 50, 80, 0.5)',
+        borderColor: '#444',
+        fillerColor: 'rgba(80, 120, 220, 0.4)',
+        handleStyle: { color: '#888', borderColor: '#aaa' },
+        moveHandleStyle: { color: '#666' },
+        textStyle: { color: '#aaa', fontSize: 10 },
+        showDetail: false,
+      },
     ],
     series: [
       {
         name: 'K线', type: 'candlestick', data: ohlc,
         itemStyle: {
-          // A 股习惯:红涨绿跌
-          color: '#ef232a', color0: '#14b066',
-          borderColor: '#ef232a', borderColor0: '#14b066',
+          color: '#ef232a',        // 涨红
+          color0: '#14b066',       // 跌绿
+          borderColor: '#ef232a',
+          borderColor0: '#14b066',
+        },
+        markLine: {
+          symbol: 'none',
+          silent: true,
+          label: {
+            show: true, position: 'end', color: '#fbbf24',
+            formatter: '训练起点', fontSize: 10,
+            backgroundColor: 'rgba(251, 191, 36, 0.18)',
+            padding: [2, 4],
+          },
+          lineStyle: { color: '#fbbf24', type: 'dashed', width: 1 },
+          data: startMark,
+        },
+        markPoint: {
+          symbol: 'pin',
+          symbolSize: 40,
+          symbolOffset: [0, -20],
+          data: [{
+            name: '最新价',
+            coord: [lastDate, lastClose],
+            value: lastClose.toFixed(2),
+            itemStyle: { color: lastUp ? '#ef232a' : '#14b066' },
+            label: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
+          }],
         },
       },
       { name: 'MA5',  type: 'line', data: ma5,  smooth: true, lineStyle: { width: 1, color: '#ff9800' }, showSymbol: false },
-      { name: 'MA10', type: 'line', data: ma10, smooth: true, lineStyle: { width: 1, color: '#2196f3' }, showSymbol: false },
-      { name: 'MA20', type: 'line', data: ma20, smooth: true, lineStyle: { width: 1, color: '#9c27b0' }, showSymbol: false },
+      { name: 'MA10', type: 'line', data: ma10, smooth: true, lineStyle: { width: 1, color: '#ff5722' }, showSymbol: false },
+      { name: 'MA20', type: 'line', data: ma20, smooth: true, lineStyle: { width: 1, color: '#2196f3' }, showSymbol: false },
+      { name: 'MA30', type: 'line', data: ma30, smooth: true, lineStyle: { width: 1, color: '#9c27b0' }, showSymbol: false },
+      { name: 'MA60', type: 'line', data: ma60, smooth: true, lineStyle: { width: 1, color: '#ffc107' }, showSymbol: false },
       { name: '成交量', type: 'bar', data: volumes, xAxisIndex: 1, yAxisIndex: 1 },
     ],
   }, true)
@@ -714,7 +922,14 @@ watch(() => session.value?.current_date, async () => {
               margin-bottom: 8px; }
 .chart-head .t { font-size: 14px; color: #303133; font-weight: bold; }
 .chart-head .hint { font-size: 12px; color: #909399; }
-.kline-chart { width: 100%; height: 380px; }
+.kline-chart {
+  width: 100%;
+  height: 460px;
+  background: #0a0e1a;
+  border-radius: 6px;
+  padding: 4px 0;
+  box-shadow: inset 0 0 12px rgba(0,0,0,.5);
+}
 .equity-chart { width: 100%; height: 220px; }
 .chart-empty { padding: 60px 0; text-align: center; }
 .empty-hint { font-size: 12px; color: #909399; margin-top: 8px; line-height: 1.8; }
