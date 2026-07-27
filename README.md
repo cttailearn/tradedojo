@@ -64,7 +64,20 @@ stock_data_system/
 
 ## 🚀 快速开始
 
-### 1. 启动后端
+### 1. 配置环境变量(必读,生产)
+
+```bash
+cp .env.example .env
+# 编辑 .env,至少设置:
+#   STOCK_SECRET_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(48))")
+#   STOCK_ADMIN_PASSWORD=你的强密码
+#   STOCK_CORS_ORIGINS=https://your-domain.com
+```
+
+> **生产模式不设置 `STOCK_SECRET_KEY` 或 `STOCK_ADMIN_PASSWORD`,应用会拒绝启动。**
+> 本地开发可设 `STOCK_DEV=1` 自动生成临时密钥与管理员密码(写到 `backend/logs/DEV_ADMIN_PASSWORD.txt`)。
+
+### 2. 启动后端
 
 ```bash
 cd backend
@@ -72,7 +85,7 @@ uv sync
 uv run main.py             # 监听 :8000,自动托管 frontend/dist/
 ```
 
-### 2. 构建前端(首次)
+### 3. 构建前端(首次)
 
 ```bash
 cd frontend
@@ -82,7 +95,7 @@ npm run build              # 输出到 dist/
 
 > 后端启动时会自动加载 `frontend/dist/`,无需单独跑前端。
 
-### 3. 开发模式(可选)
+### 4. 开发模式(可选)
 
 如果想修改前端代码并热更新:
 

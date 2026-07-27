@@ -5,13 +5,14 @@ K线交易训练 —— 业务主路由
 - 下单撮合(买入/卖出)
 - 持仓 / 资金 / 成交记录
 """
+import logging
 import random
 import sqlite3
 import math
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from app.deps_train import get_current_train_user
 from app.models import (
@@ -20,8 +21,13 @@ from app.models import (
     TrainingSessionInfo,
     TrainingSetupRequest,
 )
+from app.config import settings
+from app.rate_limit import limiter
+from app.utils import calc_session_cost
 from db.database import execute, get_conn, query_all, query_one
 
+
+log = logging.getLogger("app.train.trade")
 
 router = APIRouter(prefix="/api/train", tags=["训练端-交易"],
                    dependencies=[Depends(get_current_train_user)])
@@ -31,81 +37,82 @@ router = APIRouter(prefix="/api/train", tags=["训练端-交易"],
 # Helpers
 # =========================================================
 def _pick_random_stock(req: TrainingSetupRequest) -> dict:
-    """根据训练参数随机挑一只符合过滤条件的股票"""
-    # 注意:同时关联 stock_list 和 kline_daily,两表都有 code 列,
-    # 所以所有过滤条件都要用 s.code / s.market / s.industry 限定前缀
+    """根据训练参数随机挑一只符合过滤条件的股票.
+
+    重写为两步走,避免 ORDER BY RANDOM() + 大表 JOIN 的全表扫:
+      1. 用相同 where 拿到候选 code 列表(只查 stock_list,小表快);
+      2. 随机选 1 个 code,单独校验 K 线覆盖度与 ST 状态;
+      3. 不合格就再随机一个,最多 5 次,降级挑最宽松的版本.
+    """
     where = ["s.is_active = 1"]
     params = []
-
     if not req.allow_chinext:
-        # 创业板:深圳 30xxxx
         where.append("s.code NOT LIKE '30%'")
     if not req.allow_kcb:
-        # 科创板:上海 688xxx
         where.append("s.code NOT LIKE '688%'")
     if not req.allow_bj:
-        # 北交所:8xxxxx, 92xxxx, 4xxxxx(老三板), 83xxxx 等
         where.append("s.code NOT LIKE '8%' AND s.code NOT LIKE '92%'")
-    # A股主板/中小板:600/601/603/000/002
-
     if req.market:
-        where.append("s.market = ?")
-        params.append(req.market)
+        where.append("s.market = ?"); params.append(req.market)
     if req.industry:
-        where.append("s.industry = ?")
-        params.append(req.industry)
+        where.append("s.industry = ?"); params.append(req.industry)
     if req.keyword:
         where.append("(s.code LIKE ? OR s.name LIKE ?)")
         kw = f"%{req.keyword}%"
         params.extend([kw, kw])
 
-    # 要求该股有足够的历史K线(>= lookback_months * 20 根)
-    # 通过子查询过滤
-    sql = f"""
-        SELECT s.code, s.name, s.industry, s.market, COUNT(k.trade_date) AS kcnt,
-               MIN(k.trade_date) AS first_dt, MAX(k.trade_date) AS last_dt
-        FROM stock_list s
-        JOIN kline_daily k
-          ON k.code = s.code AND k.adjust_type = 'qfq'
-        WHERE {' AND '.join(where)}
-        GROUP BY s.code, s.name, s.industry, s.market
-        HAVING COUNT(k.trade_date) >= ?
-           AND MIN(k.trade_date) <= ?
-           AND MAX(k.trade_date) >= ?
-        ORDER BY RANDOM()
-        LIMIT 1
-    """
-    min_bars = req.lookback_months * 20
-    # 给一个宽松的上限结束
-    row = query_one(sql, params + [min_bars, req.start_date, req.end_date])
-    if not row:
-        # 退一步:不限 K 线数,只要至少有一根
-        sql2 = f"""
-            SELECT s.code, s.name, s.industry, s.market,
-                   MIN(k.trade_date), MAX(k.trade_date)
-            FROM stock_list s
-            LEFT JOIN kline_daily k
-              ON k.code = s.code AND k.adjust_type = 'qfq'
-            WHERE {' AND '.join(where)}
-            GROUP BY s.code, s.name, s.industry, s.market
-            HAVING MAX(k.trade_date) IS NOT NULL
-               AND MAX(k.trade_date) >= ?
-            ORDER BY RANDOM()
-            LIMIT 1
-        """
-        row = query_one(sql2, params + [req.start_date])
-        if not row:
-            raise HTTPException(status_code=404, detail="没有符合条件的股票(请放宽过滤或检查 K 线数据)")
+    base_where_sql = ' AND '.join(where)
+    # Step 1: 拉候选(只查 stock_list,带可见字段)—— 通常几千行,几乎瞬间
+    rows = query_all(
+        f"SELECT s.code, s.name, s.industry, s.market FROM stock_list s "
+        f"WHERE {base_where_sql} ORDER BY s.code ASC",
+        tuple(params),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="没有符合条件的股票(请放宽过滤)")
+    random.shuffle(rows)
 
-    code, name, industry, market = row[0], row[1], row[2], row[3]
-    # ST 过滤(只能事后判断): 检查名称
-    if not req.allow_st and name and ("ST" in name.upper() or "*ST" in name):
-        # 重抽一次,最多 5 次
-        for _ in range(5):
-            row = query_one(sql, params + [min_bars, req.start_date, req.end_date])
-            if row and (not row[1] or "ST" not in row[1].upper()):
-                return {"code": row[0], "name": row[1], "industry": row[2], "market": row[3]}
-        # 实在找不到就保留第一个
+    def _has_enough_kline(code: str) -> bool:
+        cnt = query_one(
+            "SELECT COUNT(*) FROM kline_daily "
+            "WHERE code = ? AND adjust_type = 'qfq' "
+            "  AND trade_date <= ?",
+            (code, req.end_date),
+        )
+        if not cnt:
+            return False
+        n = cnt[0] or 0
+        if n >= req.lookback_months * 20:
+            return True
+        # 宽松模式: 至少 5 根
+        return n >= 5
+
+    attempts = 0
+    for code, name, industry, market in rows:
+        if attempts >= 5:
+            break
+        attempts += 1
+        # ST 过滤(只能事后检查 name): 严格要求"非 ST"才进
+        n_up = (name or "").upper()
+        if not req.allow_st and ("ST" in n_up or "*ST" in n_up):
+            continue
+        if not _has_enough_kline(code):
+            continue
+        # 还要求区间内全部存在(训练区间被节假日/退市切片):
+        # 用 1 次 SELECT 看下 MIN/MAX
+        rng = query_one(
+            "SELECT MIN(trade_date), MAX(trade_date) FROM kline_daily "
+            "WHERE code = ? AND adjust_type = 'qfq'",
+            (code,),
+        )
+        if not rng or not rng[1]:
+            continue
+        if rng[1] < req.start_date:
+            continue
+        return {"code": code, "name": name, "industry": industry, "market": market}
+
+    # 降级:第一个候选(允许 K 线不足或非交易日)
+    code, name, industry, market = rows[0]
     return {"code": code, "name": name, "industry": industry, "market": market}
 
 
@@ -219,6 +226,11 @@ def _build_session_view(session: dict) -> dict:
     except Exception:
         lookback_start = session["start_date"]
     revealed = _kline_in_window(code, lookback_start, current_dt)
+    # 若 reveal_date 是非交易日,把下一个交易日 bar 拼上,作为"当前可见 bar"
+    if revealed and revealed[-1]["trade_date"] < current_dt:
+        next_bar = _kline_in_window(code, current_dt, "2099-12-31")
+        if next_bar:
+            revealed = revealed + [next_bar[0]]
     current_bar = revealed[-1] if revealed else None
 
     # 持仓
@@ -327,20 +339,11 @@ def list_my_sessions(user: dict = Depends(get_current_train_user)):
 
 
 @router.post("/sessions/start")
-def start_session(req: TrainingSetupRequest, user: dict = Depends(get_current_train_user)):
+@limiter.limit("20/minute")
+def start_session(req: TrainingSetupRequest, request: Request, response: Response, user: dict = Depends(get_current_train_user)):
     """发起一场训练:消费钱包余额、随机选股、写入 session"""
-    # 1. 计算本次会话需消耗的训练资金(阶梯式)
-    #   - 起步价 5 元
-    #   - 训练天数越长越贵,每自然日 0.05 元(包含周末/节假日)
-    #   - 初始资金越大越贵,每 100 万 +20 元(上限 +60 元)
-    #   - 总上限 80 元,下限 5 元
-    try:
-        from datetime import datetime as _dt
-        span_days = max(1, (_dt.strptime(req.end_date, "%Y-%m-%d") - _dt.strptime(req.start_date, "%Y-%m-%d")).days)
-    except Exception:
-        span_days = 30
-    cash_factor = min(60.0, (req.initial_cash / 1_000_000.0) * 20.0)
-    session_cost = min(80.0, max(5.0, 5.0 + span_days * 0.05 + cash_factor))
+    # 训练费统一在 app/utils.calc_session_cost,前端用 frontend/src/utils/trainFee.js
+    session_cost = calc_session_cost(req.start_date, req.end_date, req.initial_cash)
 
     with get_conn() as conn:
         # 原子化扣费: UPDATE WHERE balance >= ? 看 rowcount
@@ -428,7 +431,8 @@ def get_session(session_id: int, user: dict = Depends(get_current_train_user)):
 
 
 @router.post("/sessions/{session_id}/advance")
-def advance(session_id: int, req: AdvanceRequest, user: dict = Depends(get_current_train_user)):
+@limiter.limit("60/minute")
+def advance(session_id: int, req: AdvanceRequest, request: Request, response: Response, user: dict = Depends(get_current_train_user)):
     """时间推进:把 current_date 向后推 N 个交易日;返回新的视图"""
     sess = _session_for_user(user["id"], session_id)
     if sess["status"] != "active":
@@ -444,46 +448,67 @@ def advance(session_id: int, req: AdvanceRequest, user: dict = Depends(get_curre
     if not rows:
         raise HTTPException(status_code=400, detail="已到达训练终点")
     new_current = rows[-1][0]
+    advance_dates = [r[0] for r in rows]
 
     execute(
         "UPDATE training_session SET reveal_date = ?, updated_at = datetime('now','localtime') "
         "WHERE id = ?",
         (new_current, sess["id"]),
     )
-    # 在每个揭示日记录权益快照(用 session 维度估算)
-    # 简化:只记最后一天
-    cash_eq = query_one(
-        "SELECT COALESCE(cash,0) FROM training_equity WHERE session_id = ? "
-        "ORDER BY id DESC LIMIT 1",
-        (sess["id"],),
-    )
-    # 现金来自订单推断
+
+    # 现金来自订单:对所有 BUY/SELL 在当前时刻的累加只与"订单"有关,不随时间变化
     paid_buy = query_one(
-        "SELECT COALESCE(SUM(amount+total_fee),0) FROM training_order WHERE session_id = ? AND side = 'BUY'",
+        "SELECT COALESCE(SUM(amount+total_fee),0) FROM training_order "
+        "WHERE session_id = ? AND side = 'BUY'",
         (sess["id"],),
     )[0] or 0
     recv_sell = query_one(
-        "SELECT COALESCE(SUM(amount-total_fee),0) FROM training_order WHERE session_id = ? AND side = 'SELL'",
+        "SELECT COALESCE(SUM(amount-total_fee),0) FROM training_order "
+        "WHERE session_id = ? AND side = 'SELL'",
         (sess["id"],),
     )[0] or 0
     cash = sess["initial_cash"] - paid_buy + recv_sell
-    # 持仓市值
-    pos_rows = query_all(
-        "SELECT p.quantity, p.avg_cost, k.close "
-        "FROM training_position p LEFT JOIN kline_daily k "
-        "  ON k.code = p.code AND k.adjust_type = 'qfq' AND k.trade_date = ? "
-        "WHERE p.session_id = ?",
-        (new_current, sess["id"]),
+
+    # 一次拉所有持仓代码的 close 列(逐日 close),用于插每个揭示日的权益快照
+    pos_codes = query_all(
+        "SELECT code FROM training_position WHERE session_id = ? AND quantity > 0",
+        (sess["id"],),
     )
-    mv = 0.0
-    for qty, avg_cost, price in pos_rows:
-        px = price if price is not None else (avg_cost or 0)
-        mv += qty * px
-    execute(
-        "INSERT INTO training_equity(session_id, trade_date, cash, market_value, total_equity) "
-        "VALUES(?, ?, ?, ?, ?)",
-        (sess["id"], new_current, cash, mv, cash + mv),
-    )
+    if pos_codes:
+        code_list = [c[0] for c in pos_codes]
+        placeholders = ",".join("?" * len(code_list))
+        close_map = {}   # code -> { trade_date -> close }
+        for r in query_all(
+            f"SELECT code, trade_date, close FROM kline_daily "
+            f"WHERE code IN ({placeholders}) AND adjust_type = 'qfq' "
+            f"  AND trade_date IN ({','.join('?'*len(advance_dates))})",
+            tuple(code_list) + tuple(advance_dates),
+        ):
+            close_map.setdefault(r[0], {})[r[1]] = r[2]
+    else:
+        close_map = {}
+
+    with get_conn() as conn:
+        # 每个揭示日插 1 条 equity 快照,曲线连续
+        for d in advance_dates:
+            mv = 0.0
+            for c in close_map:
+                # 持仓仅显示在 start_date 之后开仓的部分;这里用当前持仓量*该日 close
+                pos = query_one(
+                    "SELECT quantity, avg_cost FROM training_position "
+                    "WHERE session_id = ? AND code = ?",
+                    (sess["id"], c),
+                )
+                if not pos or pos[0] <= 0:
+                    continue
+                qty, avg_cost = pos
+                px = close_map[c].get(d, avg_cost or 0)
+                mv += qty * px
+            conn.execute(
+                "INSERT INTO training_equity(session_id, trade_date, cash, market_value, total_equity) "
+                "VALUES(?, ?, ?, ?, ?)",
+                (sess["id"], d, cash, mv, cash + mv),
+            )
 
     return get_session(session_id, user=user)
 
@@ -565,7 +590,8 @@ def equity_curve(session_id: int, user: dict = Depends(get_current_train_user)):
 
 
 @router.post("/sessions/{session_id}/trade")
-def trade(session_id: int, req: TradeOrderRequest, user: dict = Depends(get_current_train_user)):
+@limiter.limit("60/minute")
+def trade(session_id: int, req: TradeOrderRequest, request: Request, response: Response, user: dict = Depends(get_current_train_user)):
     """下单:买入/卖出 — 限价撮合(简单地按当前 bar close 撮合)"""
     sess = _session_for_user(user["id"], session_id)
     if sess["status"] != "active":
@@ -575,13 +601,17 @@ def trade(session_id: int, req: TradeOrderRequest, user: dict = Depends(get_curr
         raise HTTPException(status_code=400, detail="side 必须是 BUY/SELL")
 
     current_dt = sess["reveal_date"] or sess["start_date"]
-    bar = query_one(
-        "SELECT open, high, low, close FROM kline_daily "
-        "WHERE code = ? AND adjust_type = 'qfq' AND trade_date = ?",
+    # 撮合价取<reveal_date 及之后>的第一根 bar(若 reveal 是节假日则下一交易日)
+    bar_row = query_one(
+        "SELECT trade_date, open, high, low, close FROM kline_daily "
+        "WHERE code = ? AND adjust_type = 'qfq' AND trade_date >= ? "
+        "ORDER BY trade_date ASC LIMIT 1",
         (sess["code"], current_dt),
     )
-    if not bar:
+    if not bar_row:
         raise HTTPException(status_code=400, detail="当前还未揭示 K 线")
+    bar = (bar_row[1], bar_row[2], bar_row[3], bar_row[4])
+    trade_date = bar_row[0]   # 实际撮合交易日(可能不是 reveal_date 本身)
 
     price = req.price if req.price else float(bar[3])  # 撮合价
     if price <= 0:
@@ -635,7 +665,7 @@ def trade(session_id: int, req: TradeOrderRequest, user: dict = Depends(get_curr
                     session_id, user_id, trade_date, side, price, quantity, amount,
                     commission, stamp_tax, transfer_fee, total_fee
                 ) VALUES(?, ?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?)""",
-                (sess["id"], user["id"], current_dt,
+                (sess["id"], user["id"], trade_date,
                  price, qty, trade_amount,
                  fees["commission"], fees["stamp_tax"], fees["transfer_fee"], fees["total_fee"]),
             )
@@ -691,7 +721,7 @@ def trade(session_id: int, req: TradeOrderRequest, user: dict = Depends(get_curr
                     session_id, user_id, trade_date, side, price, quantity, amount,
                     commission, stamp_tax, transfer_fee, total_fee, realized_pnl
                 ) VALUES(?, ?, ?, 'SELL', ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (sess["id"], user["id"], current_dt,
+                (sess["id"], user["id"], trade_date,
                  price, qty, trade_amount,
                  fees["commission"], fees["stamp_tax"], fees["transfer_fee"],
                  fees["total_fee"], round(realized_pnl, 2)),

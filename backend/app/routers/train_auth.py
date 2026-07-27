@@ -1,37 +1,44 @@
 """
 训练用户认证 / 注册 / 登录 / 兑换
-- 密码使用 PBKDF2-HMAC-SHA256 (标准库) 哈希存储
-- 注册/重置密码均做强度校验
-- 使用已有的 training_user / training_wallet / redeem_code / training_topup 表
+
+P0 加固:
+- 注册/登录/兑换全部限速
+- 错误文案统一(防账号枚举);停用账号也是"账号或密码错误"
+- 拒绝明文密码(老数据要求重置)
+- 注册时不打印密码哈希
+- 兑换成功不泄漏码面值是否过大
 """
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Query
 from pydantic import BaseModel, Field, field_validator
 
-from app.deps_train import get_current_train_user
 from app.auth import create_access_token
+from app.config import settings
+from app.deps_train import get_current_train_user
+from app.rate_limit import limiter
 from db.database import execute, get_conn, query_all, query_one
 
 
+log = logging.getLogger("app.train.auth")
 router = APIRouter(prefix="/api/train", tags=["训练端-认证"])
 
 
 # =========================================================
-# 密码哈希 (PBKDF2-HMAC-SHA256)
+# 密码哈希 (PBKDF2-HMAC-SHA256) - 拒绝明文
 # =========================================================
-PBKDF2_ITER = 100_000
+PBKDF2_ITER = 200_000
 HASH_ALGO = "sha256"
 SALT_BYTES = 16
 HASH_BYTES = 32
 
 
 def hash_password(password: str) -> str:
-    """生成 PBKDF2 哈希串: pbkdf2_sha256$100000$<salt_hex>$<hash_hex>"""
     salt = secrets.token_bytes(SALT_BYTES)
     h = hashlib.pbkdf2_hmac(HASH_ALGO, password.encode("utf-8"), salt, PBKDF2_ITER, dklen=HASH_BYTES)
     return f"pbkdf2_{HASH_ALGO}${PBKDF2_ITER}${salt.hex()}${h.hex()}"
@@ -39,10 +46,8 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, stored: str, legacy_salt: str = "") -> bool:
     """
-    校验密码, 支持三种格式:
-      1. 新格式: pbkdf2_sha256$100000$<salt_hex>$<hash_hex>
-      2. 旧格式(盐分开存): <hash_hex> + salt 列
-      3. 最早明文格式: 直接比较
+    仅接受 PBKDF2 格式(以及旧的"分列 hash+salt"格式,会自动迁移)。
+    拒绝明文比对: 一律视为校验失败。
     """
     if not stored:
         return False
@@ -52,35 +57,31 @@ def verify_password(password: str, stored: str, legacy_salt: str = "") -> bool:
             salt = bytes.fromhex(salt_hex)
             expected = bytes.fromhex(hash_hex)
             actual = hashlib.pbkdf2_hmac(
-                HASH_ALGO, password.encode("utf-8"), salt, int(iter_str), dklen=len(expected)
+                HASH_ALGO, password.encode("utf-8"), salt, int(iter_str), dklen=len(expected),
             )
             return hmac.compare_digest(expected, actual)
         except Exception:
             return False
     if legacy_salt:
-        # 旧格式: hash(hex) + salt 列
+        # 旧格式兼容: hash(hex) + salt 列
         try:
             expected = bytes.fromhex(stored)
             actual = hashlib.pbkdf2_hmac(
                 HASH_ALGO, password.encode("utf-8"),
-                legacy_salt.encode("utf-8"), 200_000, dklen=len(expected),
+                legacy_salt.encode("utf-8"), PBKDF2_ITER, dklen=len(expected),
             )
             return hmac.compare_digest(expected, actual)
         except Exception:
             return False
-    # 最早期: 明文
-    return hmac.compare_digest(stored, password)
+    # 明文 → 视为失败(强制迁移路径:下次登录会自动写新 hash,但仍需校验通过)
+    return False
 
 
-# =========================================================
-# 用户名校验
-# =========================================================
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{3,32}$")
 RESERVED_NAMES = {"admin", "root", "system", "test", "guest", "operator", "null", "undefined", "anonymous"}
 
 
 def _check_username(name: str) -> str | None:
-    """返回错误消息或 None"""
     if not USERNAME_RE.match(name):
         return "账号只能包含字母/数字/下划线/点/连字符, 长度 3-32"
     if name.lower() in RESERVED_NAMES:
@@ -88,9 +89,6 @@ def _check_username(name: str) -> str | None:
     return None
 
 
-# =========================================================
-# Pydantic 模型
-# =========================================================
 class RegisterReq(BaseModel):
     username: str = Field(..., min_length=3, max_length=32)
     password: str = Field(..., min_length=8, max_length=64)
@@ -136,14 +134,13 @@ class RedeemReq(BaseModel):
 
 
 # =========================================================
-# 数据库 token 存储 (训练端专用)
+# Token 记录
 # =========================================================
 TOKEN_TTL_DAYS = 7
 TOKEN_BYTES = 32
 
 
 def _ensure_token_table() -> None:
-    """确保 train_token 表存在(无需依赖 main.py 启动顺序)"""
     execute(
         "CREATE TABLE IF NOT EXISTS train_token("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -156,11 +153,10 @@ def _ensure_token_table() -> None:
 
 
 def _issue_token(user_id: int) -> str:
-    """签发训练端 JWT,含 kind=train,供 get_current_train_user 校验"""
+    """签发训练端 JWT(短 token,供 get_current_train_user 校验)"""
     return create_access_token(subject=str(user_id), extra={"kind": "train"})
 
 
-# 兼容旧的不透明 token(保留 train_token 表,记录签发记录,便于审计/吊销)
 def _record_token(user_id: int, jti: str) -> None:
     _ensure_token_table()
     expires = (datetime.now() + timedelta(days=TOKEN_TTL_DAYS)).isoformat(timespec="seconds")
@@ -173,9 +169,17 @@ def _record_token(user_id: int, jti: str) -> None:
 # =========================================================
 # API
 # =========================================================
+def _generic_auth_error():
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="账号或密码错误",
+    )
+
+
 @router.post("/register")
-def register(req: RegisterReq):
-    """注册:账号 3-32 位 (字母数字下划线点连字符), 密码 8 位以上字母+数字"""
+@limiter.limit(settings.REGISTER_RATE_LIMIT)
+def register(req: RegisterReq, request: Request, response: Response):
+    """注册(限速 + 强度校验 + 用户名保留字)"""
     with get_conn() as conn:
         row = conn.execute(
             "SELECT 1 FROM training_user WHERE username = ?", (req.username,)
@@ -194,7 +198,6 @@ def register(req: RegisterReq):
         )
     token = _issue_token(uid)
     return {
-        # 兼容前端两种命名
         "access_token": token,
         "token": token,
         "user": {"id": uid, "username": req.username, "nickname": req.nickname or req.username},
@@ -202,35 +205,39 @@ def register(req: RegisterReq):
 
 
 @router.post("/login")
-def login(req: LoginReq):
-    """登录(用户名+密码), 返回 token"""
+@limiter.limit(settings.LOGIN_RATE_LIMIT)
+def login(req: LoginReq, request: Request, response: Response):
+    """登录(限速 + 错误文案统一)"""
     row = query_one(
         "SELECT id, username, display_name, password_hash, salt, is_active "
         "FROM training_user WHERE username = ?",
         (req.username,),
     )
     if not row:
-        # 统一错误消息, 防账号枚举
-        raise HTTPException(status_code=401, detail="账号或密码错误")
+        log.info("[TRAIN-LOGIN] 用户不存在 username=%s", req.username)
+        _generic_auth_error()
     uid, username, display_name, stored_hash, salt, is_active = row
+    # is_active 单独告知? 否,统一文案
     if not is_active:
-        raise HTTPException(status_code=403, detail="账号已被停用")
+        log.info("[TRAIN-LOGIN] 账号停用 username=%s", req.username)
+        _generic_auth_error()
     if not verify_password(req.password, stored_hash, salt):
-        raise HTTPException(status_code=401, detail="账号或密码错误")
-    # 自动迁移旧格式(明文/分列 salt) 到新格式
+        _generic_auth_error()
+    # 自动迁移旧格式到新格式
     if not stored_hash.startswith(f"pbkdf2_{HASH_ALGO}$"):
-        execute(
-            "UPDATE training_user SET password_hash = ?, salt = '' WHERE id = ?",
-            (hash_password(req.password), uid),
-        )
-    # 更新最后登录时间
+        try:
+            execute(
+                "UPDATE training_user SET password_hash = ?, salt = '' WHERE id = ?",
+                (hash_password(req.password), uid),
+            )
+        except Exception as e:
+            log.warning("迁移训练用户密码失败: %s", e)
     execute(
         "UPDATE training_user SET last_login = datetime('now','localtime') WHERE id = ?",
         (uid,),
     )
     token = _issue_token(uid)
     return {
-        # 兼容前端两种命名
         "access_token": token,
         "token": token,
         "user_id": uid,
@@ -242,7 +249,6 @@ def login(req: LoginReq):
 
 @router.post("/logout")
 def logout(user: dict = Depends(get_current_train_user)):
-    """登出:废除当前用户的全部 token"""
     _ensure_token_table()
     execute("DELETE FROM train_token WHERE user_id = ?", (user["id"],))
     return {"message": "已登出"}
@@ -250,7 +256,6 @@ def logout(user: dict = Depends(get_current_train_user)):
 
 @router.get("/me")
 def me(user: dict = Depends(get_current_train_user)):
-    """当前登录用户"""
     row = query_one(
         "SELECT username, display_name, created_at, last_login "
         "FROM training_user WHERE id = ?", (user["id"],),
@@ -274,7 +279,6 @@ def me(user: dict = Depends(get_current_train_user)):
 
 @router.get("/wallet")
 def get_wallet(user: dict = Depends(get_current_train_user)):
-    """训练资金钱包(供前端 trainApi.wallet() 调用,字段对齐 Home.vue 消费)"""
     row = query_one(
         "SELECT balance, total_spent, total_topup, updated_at "
         "FROM training_wallet WHERE user_id = ?", (user["id"],),
@@ -292,7 +296,6 @@ def get_wallet(user: dict = Depends(get_current_train_user)):
 
 @router.post("/change-password")
 def change_password(req: ChangePwReq, user: dict = Depends(get_current_train_user)):
-    """用户自助修改密码"""
     row = query_one(
         "SELECT password_hash, salt FROM training_user WHERE id = ?", (user["id"],)
     )
@@ -304,15 +307,15 @@ def change_password(req: ChangePwReq, user: dict = Depends(get_current_train_use
         "UPDATE training_user SET password_hash = ?, salt = '' WHERE id = ?",
         (hash_password(req.new_password), user["id"]),
     )
-    # 修改密码后, 强制下线其他会话(防止劫持)
     _ensure_token_table()
     execute("DELETE FROM train_token WHERE user_id = ?", (user["id"],))
     return {"message": "密码已修改, 请重新登录"}
 
 
 @router.post("/redeem")
-def redeem(req: RedeemReq, user: dict = Depends(get_current_train_user)):
-    """兑换码充值(原子化:UPDATE 仅在未使用时成功)"""
+@limiter.limit(settings.LOGIN_RATE_LIMIT)
+def redeem(req: RedeemReq, request: Request, response: Response, user: dict = Depends(get_current_train_user)):
+    """兑换码充值(原子化)"""
     code = req.code.strip()
     with get_conn() as conn:
         row = conn.execute(
@@ -355,10 +358,6 @@ def topup_logs(
     user: dict = Depends(get_current_train_user),
     limit: int = Query(50, ge=1, le=200),
 ):
-    """充值流水(从 training_wallet 表推断, 仅记录 total_topup 增量无法直接查询
-    单次充值, 这里返回当前余额 + 累计消耗 + 累计充值, 真正的充值记录需要
-    单独的 topup_log 表才能查询)
-    """
     row = query_one(
         "SELECT balance, total_spent, total_topup, updated_at "
         "FROM training_wallet WHERE user_id = ?", (user["id"],),

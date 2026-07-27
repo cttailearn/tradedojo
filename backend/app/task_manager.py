@@ -73,21 +73,52 @@ if logging.getLogger().level > logging.INFO or not logging.getLogger().handlers:
     )
 
 
-# ---- 文件日志 ----
+# ---- 文件日志(轮转 + 脱敏) ----
+class _SafeFormatter(logging.Formatter):
+    """在格式化前过滤敏感字段(Authorization / password / Bearer / token=...)"""
+
+    _SENSITIVE = (
+        "authorization",
+        "password",
+        "passwd",
+        "access_token",
+        "refresh_token",
+        "tdj_access",
+        "tdj_refresh",
+    )
+
+    def format(self, record: logging.LogRecord) -> str:  # noqa: D401
+        msg = super().format(record)
+        low = msg.lower()
+        for s in self._SENSITIVE:
+            if s in low:
+                # 简单遮掩:把可疑键值替换为 ***(生产建议用专门的脱敏库)
+                import re as _re
+                msg = _re.sub(
+                    rf"(?i)({s}[^,\s]{{0,20}}[:=]\s*)([^\s,;]+)",
+                    r"\1***",
+                    msg,
+                )
+        return msg
+
+
 def _ensure_file_logger():
     settings.LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = settings.LOG_DIR / f"app_{datetime.now().strftime('%Y%m%d')}.log"
+    log_file = settings.LOG_DIR / "app.log"
     root = logging.getLogger()
-    # 避免重复添加
+    # 避免重复添加 RotatingFileHandler
+    from logging.handlers import RotatingFileHandler
     has_file = any(
-        isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", "") == str(log_file)
+        isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", "") == str(log_file)
         for h in root.handlers
     )
     if not has_file:
-        fh = logging.FileHandler(log_file, encoding="utf-8")
-        fh.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s")
+        fh = RotatingFileHandler(
+            log_file, maxBytes=20 * 1024 * 1024, backupCount=10, encoding="utf-8",
         )
+        fh.setFormatter(_SafeFormatter(
+            "%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+        ))
         root.addHandler(fh)
 
 

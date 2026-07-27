@@ -94,6 +94,16 @@
                 </span>
               </span>
             </div>
+            <div class="bench-pick">
+              <span class="hint">对照指数:</span>
+              <el-select v-model="benchCode" placeholder="不叠加" clearable size="small"
+                         style="width: 180px;" @change="loadBenchmark">
+                <el-option
+                  v-for="i in benchList" :key="i.code"
+                  :label="`${i.name} (${i.code})`" :value="i.code"
+                />
+              </el-select>
+            </div>
           </div>
           <div ref="klineChartEl" class="kline-chart" />
           <div v-if="loadedSession && !klineBars.length" class="chart-empty">
@@ -301,6 +311,10 @@ const id = computed(() => Number(route.params.id))
 const session = ref(null)
 const klineBars = ref([])
 const equity = ref([])
+// 对照指数
+const benchList = ref([])
+const benchCode = ref(null)
+const benchBars = ref([])   // [{ trade_date, close }]
 const loadedSession = ref(false)
 const loading = ref(false)
 const advancing = ref(false)
@@ -359,12 +373,21 @@ const estimatedBuyQty = computed(() => {
 
 const sellEstimatedPnl = computed(() => {
   const q = Number(sellForm.quantity) || 0
-  if (!q || !myPositionQty.value) return 0
+  if (!q || !myPositionQty.value || !session.value?.fee_rules) return 0
+  const f = session.value.fee_rules
   const ratio = Math.min(q / myPositionQty.value, 1)
-  const currentVal = currentPrice.value * q
-  const costVal = myAvgCost.value * q
-  const feeEst = (currentVal * 0.0003 + currentVal * 0.001 + 5) // 保守估
-  return currentVal - costVal - feeEst * ratio * 2
+  const proceeds = currentPrice.value * q                                  // 卖出价 × 股数
+  const cost = myAvgCost.value * q                                          // 买入成本
+  // 卖出端: 佣金 + 印花税 + 过户费
+  const sellCommission = Math.max(proceeds * f.commission_rate, f.min_commission)
+  const sellStamp      = proceeds * f.stamp_tax
+  const sellTransfer   = proceeds * f.transfer_fee
+  const sellFees       = sellCommission + sellStamp + sellTransfer
+  // 买入端: 平均成本已经含手续费(FIFO 模式 avg_cost 已含买入费),
+  // 这里 avg_cost 已经是含税均价,所以不再减买入费. 后端公式:
+  //   realized_pnl = proceeds - sellFees - cost_basis - buy_fee_proportion
+  // 若 avg_cost 已是含买入费均价,则 buy_fee_proportion ≈ 0,只减 sellFees.
+  return proceeds - cost - sellFees
 })
 
 const weeklyHint = computed(() => {
@@ -484,6 +507,41 @@ async function loadKline() {
   }
 }
 
+async function loadBenchmarkList() {
+  try {
+    const r = await trainApi.indices()
+    benchList.value = r.items || []
+    // 默认 None,不自动叠加;用户主动选.
+  } catch (e) {
+    /* 静默失败,UI 仍可用 */
+  }
+}
+
+async function loadBenchmark() {
+  if (!benchCode.value || !session.value) {
+    benchBars.value = []
+    renderKline()
+    return
+  }
+  try {
+    const sd = session.value?.start_date ? new Date(session.value.start_date) : null
+    const ed = session.value?.current_date || session.value?.end_date
+    // 拉整段训练区间 → reveal_date 的指数(包含历史回看)
+    const start = sd ? new Date(sd.getTime() - 365 * 86400000 * 2) : null // 多拉 2 年
+    const fmt = (d) => d ? d.toISOString().slice(0, 10) : undefined
+    const r = await trainApi.indexKline(benchCode.value, {
+      start: fmt(start),
+      end: ed,
+      limit: 1500,
+    })
+    benchBars.value = r.items || []
+    await nextTick()
+    renderKline()
+  } catch (e) {
+    ElMessage.error(e.message || '加载对照指数失败')
+  }
+}
+
 async function triggerKlineUpdate() {
   const code = session.value?.code
   if (!code) {
@@ -559,6 +617,42 @@ function renderKline() {
   const ma30 = calcMA(30)
   const ma60 = calcMA(60)
 
+  // 对照指数:rebased 到与个股同一基期(训练开始日前一日)
+  // 这样图上指数与个股可以直接比较相对涨跌,而不是绝对价位
+  let benchSeries = []
+  if (benchCode.value && benchBars.value.length) {
+    // 找个股最左那根 date 在指数 bars 中的位置作为基准 100
+    const firstStock = dates[0]
+    const sortedBench = benchBars.value.slice().sort((a, b) => a.trade_date.localeCompare(b.trade_date))
+    // 选训练开始日之前最近一日(更稳),找不到就退回指数第一根
+    const startIdx = (() => {
+      let i = 0
+      for (let j = 0; j < sortedBench.length; j++) {
+        if (sortedBench[j].trade_date <= firstStock) i = j
+        else break
+      }
+      return i
+    })()
+    const baseClose = Number(sortedBench[startIdx]?.close) || 1
+    // 按个股的 dates 对齐;有的留空 (-)
+    const aligned = dates.map((d) => {
+      const hit = sortedBench.find((b) => b.trade_date === d)
+      if (!hit) return '-'
+      return +(((Number(hit.close) / baseClose) - 1) * 100).toFixed(2)
+    })
+    benchSeries = [{
+      name: `对照(${benchCode.value})%`,
+      type: 'line',
+      data: aligned,
+      yAxisIndex: 1,
+      smooth: true,
+      showSymbol: false,
+      lineStyle: { width: 1, color: '#ffd700', type: 'dashed' },
+      itemStyle: { color: '#ffd700' },
+      tooltip: { show: true, valueFormatter: (v) => (v === '-' || v == null ? '-' : `${v >= 0 ? '+' : ''}${v}%`) },
+    }]
+  }
+
   // 最新价标牌
   const lastBar = bars[bars.length - 1]
   const lastClose = Number(lastBar.close)
@@ -622,7 +716,9 @@ function renderKline() {
       },
     },
     legend: {
-      data: ['K线', 'MA5', 'MA10', 'MA20', 'MA30', 'MA60'],
+      data: ['K线', 'MA5', 'MA10', 'MA20', 'MA30', 'MA60'].concat(
+        benchCode.value ? [`对照(${benchCode.value})%`] : []
+      ),
       top: 4, left: 'center',
       textStyle: { color: '#ccc', fontSize: 11 },
       itemWidth: 12, itemHeight: 8,
@@ -664,6 +760,18 @@ function renderKline() {
         axisLine: { lineStyle: { color: '#555' } },
         axisLabel: { color: '#aaa', fontSize: 10 },
         splitLine: { lineStyle: { color: '#1f2937', type: 'dashed' } },
+      },
+      {
+        // 右侧第二个 yAxis:对照指数的 % (rebased),与主图右对齐
+        scale: true,
+        position: 'right',
+        axisLine: { lineStyle: { color: '#665' } },
+        axisLabel: {
+          color: '#ffd700', fontSize: 9,
+          formatter: (v) => `${v >= 0 ? '+' : ''}${v}%`,
+        },
+        splitLine: { show: false },
+        show: !!benchCode.value,
       },
       {
         scale: true, gridIndex: 1, position: 'right',
@@ -730,6 +838,7 @@ function renderKline() {
       { name: 'MA30', type: 'line', data: ma30, smooth: true, lineStyle: { width: 1, color: '#9c27b0' }, showSymbol: false },
       { name: 'MA60', type: 'line', data: ma60, smooth: true, lineStyle: { width: 1, color: '#ffc107' }, showSymbol: false },
       { name: '成交量', type: 'bar', data: volumes, xAxisIndex: 1, yAxisIndex: 1 },
+      ...benchSeries,
     ],
   }, true)
 }
@@ -857,7 +966,7 @@ onMounted(async () => {
   window.addEventListener('resize', resize)
   window.addEventListener('keydown', onKeydown)
   await loadSession()
-  await Promise.all([loadKline(), loadEquity()])
+  await Promise.all([loadKline(), loadEquity(), loadBenchmarkList()])
 })
 
 onUnmounted(() => {
@@ -870,6 +979,7 @@ onUnmounted(() => {
 watch(() => session.value?.current_date, async () => {
   await loadKline()
   await loadEquity()
+  if (benchCode.value) await loadBenchmark()
 })
 </script>
 
@@ -919,9 +1029,10 @@ watch(() => session.value?.current_date, async () => {
              box-shadow: 0 1px 4px rgba(0,0,0,.06); }
 .page-card h3 { margin: 0 0 8px; }
 .chart-head { display: flex; align-items: center; justify-content: space-between;
-              margin-bottom: 8px; }
+              margin-bottom: 8px; flex-wrap: wrap; gap: 8px; }
 .chart-head .t { font-size: 14px; color: #303133; font-weight: bold; }
 .chart-head .hint { font-size: 12px; color: #909399; }
+.bench-pick { display: flex; align-items: center; gap: 6px; }
 .kline-chart {
   width: 100%;
   height: 460px;

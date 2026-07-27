@@ -10,6 +10,9 @@ venv/
 # ===== 运行时数据与日志 =====
 data/
 logs/
+backups/
+e2e_test_log.txt
+scripts/e2e_test_log.txt
 *.log
 *.err
 *.out
@@ -17,6 +20,17 @@ _q.txt
 backend_*
 b_*.txt
 update_all.*
+
+# ===== 敏感临时文件(永远不要进仓库) =====
+*.tmp
+admin_tok*
+*_tok*
+*_token*
+DEV_ADMIN_PASSWORD*
+.env
+.env.*
+!.env.example
+secrets.*
 
 # ===== Frontend 构建产物 =====
 node_modules/

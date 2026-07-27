@@ -39,9 +39,9 @@
       普通用户访问 /admin/login 时看不到, 管理员自己知道默认值.
     -->
     <div v-if="showDevHint" class="login-tip">
-      默认管理员账号: <code>{{ devUsername }}</code> / <code>{{ devPassword }}</code>
+      默认管理员账号: <code>{{ devUsername }}</code>
       <br />
-      <small>(提示来自 URL <code>?dev=1</code>, 仅开发环境)</small>
+      <small>密码请查看后端 <code>logs/DEV_ADMIN_PASSWORD.txt</code>(dev 模式自动生成,生产请显式设置 <code>STOCK_ADMIN_PASSWORD</code>)</small>
     </div>
   </div>
     <div class="login-footer">
@@ -77,12 +77,15 @@ const rules = {
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
 }
 
-// 开发者提示: 仅当 URL 带 ?dev=1 时显示
-const showDevHint = computed(() => route.query.dev === '1')
+// 开发者提示: 仅在 dev 构建(Vite import.meta.env.DEV)且 URL 带 ?dev=1 时显示
+// 生产构建时整段 tree-shake 掉
+const isDevBuild = import.meta.env.DEV
+const showDevHint = computed(() => isDevBuild && route.query.dev === '1')
+// 注: dev 密码现在由后端写到 logs/DEV_ADMIN_PASSWORD.txt(强随机),前端不再硬编码
 const devUsername = 'admin'
-const devPassword = 'admin123'
 
 function enableDevHint() {
+  if (!isDevBuild) return
   router.replace({ query: { ...route.query, dev: '1' } })
 }
 
@@ -92,7 +95,6 @@ async function onLogin() {
   loading.value = true
   try {
     const data = await authApi.login(form.username, form.password)
-    // 兼容两种返回: {access_token,...} 或 {code,data:{access_token,...}}
     const payload = data?.data ?? data
     const token = payload?.access_token
     const username = payload?.username ?? form.username
@@ -103,9 +105,12 @@ async function onLogin() {
       username,
       user_id: payload.user_id,
     })
-    ElMessage.success(`欢迎回来,${username}`)
+    if (payload?.must_change_pw) {
+      ElMessage.warning('首次登录请修改默认密码')
+    } else {
+      ElMessage.success(`欢迎回来,${username}`)
+    }
     const redirect = route.query.redirect || '/admin/dashboard'
-    // 用 replace 避免登录页可以 back 返回
     router.replace(redirect)
   } catch (e) {
     console.error('[Login]', e)

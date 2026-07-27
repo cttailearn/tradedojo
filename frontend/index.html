@@ -4,6 +4,18 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E📈%3C/text%3E%3C/svg%3E" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Content-Security-Policy 静态页面兜底
+      生产环境由后端 SecurityHeadersMiddleware 也下发一份,这里用于本地 file:// 调试
+      - default-src 'self': 仅允许同源资源
+      - script-src/style-src 'unsafe-inline': Vite 内联注入 HMR; 生产构建后只会有 hash 化的外链脚本
+      - connect-src 'self' http://127.0.0.1:8000: dev 时允许代理到后端
+      - frame-ancestors 'none': 禁止被嵌入 iframe(防 clickjacking)
+    -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:8000 ws:; frame-ancestors 'none'; base-uri 'self'; object-src 'none';" />
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
     <title>Tradedojo · 智能股票数据平台</title>
   </head>
   <body>

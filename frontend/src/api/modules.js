@@ -101,6 +101,11 @@ export const trainApi = {
 
   // 兑换码管理(管理员)
   redeemCodes: () => api.get('/train/admin/redeem-codes'),
+
+  // 指数对照(训练端拉指数日线,与个股 K 线叠加)
+  indices: () => api.get('/train/indices'),
+  indexKline: (code, params = {}) =>
+    api.get('/train/indices/kline', { params: { code, ...params } }),
   createRedeemCodes: (amount, count, note) =>
     api.post('/train/admin/redeem-codes', { amount, count, note }),
 

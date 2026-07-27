@@ -151,7 +151,7 @@
         <el-row :gutter="16">
           <el-col :span="24">
             <el-alert type="info" :closable="false" show-icon>
-              本次训练消耗训练资金 <b>¥ {{ sessionCost.toFixed(2) }}</b> 元 (按初始资金的 1% 起步,5 ~ 50 元封顶)。
+              本次训练消耗训练资金 <b>¥ {{ sessionCost.toFixed(2) }}</b> 元 (5 ~ 80 元封顶)。
               <span v-if="wallet.balance < sessionCost" style="color: #f56c6c;">
                 余额不足 (当前余额 ¥ {{ money(wallet.balance) }}),
                 <el-link type="warning" @click="$router.push('/train/wallet')">去充值</el-link>
@@ -179,6 +179,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { trainApi, stocksApi } from '@/api/modules'
+import { calcSessionCost } from '@/utils/trainFee'
 
 const router = useRouter()
 const loadingOptions = ref(false)
@@ -187,21 +188,30 @@ const wallet = ref({ balance: 0 })
 const rangePreset = ref('1y')
 const options = reactive({ industries: [] })
 
+// 用本地时区格式化,避免 toISOString UTC 跨天
+function fmtLocal(d) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+// 默认日期:用数据库中"最近一个有 K 线的交易日",降级到本地今天
 const DEFAULT_DATES = (() => {
   const today = new Date()
   const oneYearAgo = new Date(today)
   oneYearAgo.setFullYear(today.getFullYear() - 1)
-  const fmt = (d) => d.toISOString().slice(0, 10)
   return {
-    start: fmt(oneYearAgo),
-    end: fmt(today),
+    start: fmtLocal(oneYearAgo),
+    end: fmtLocal(today),
   }
 })()
 
 const form = reactive({
   start_date: DEFAULT_DATES.start,
   end_date: DEFAULT_DATES.end,
-  lookback_months: 1,
+  // 与后端 TrainingSetupRequest 默认值保持一致:6 (后端 Field(6, ...))
+  lookback_months: 6,
   initial_cash: 1_000_000,
   per_trade_amount: 100_000,
   max_positions: 5,
@@ -219,10 +229,8 @@ const form = reactive({
   keyword: '',
 })
 
-const sessionCost = computed(() => {
-  const v = Math.max(form.initial_cash * 0.01, 5)
-  return Math.min(v, 50)
-})
+// 训练费 = 与后端共享的 calcSessionCost 公式 (utils/trainFee.js)
+const sessionCost = computed(() => calcSessionCost(form.start_date, form.end_date, form.initial_cash))
 
 const formValid = computed(() => {
   if (!form.start_date || !form.end_date) return false
@@ -257,10 +265,8 @@ function applyRangePreset(v) {
   const end = new Date()
   const start = new Date(end)
   start.setFullYear(end.getFullYear() - years)
-  const fmt = (d) => d.toISOString().slice(0, 10)
-  form.start_date = fmt(start)
-  form.end_date = fmt(end)
-  // 不重置 v,保留用户当前选择,作为可视提示
+  form.start_date = fmtLocal(start)
+  form.end_date = fmtLocal(end)
 }
 
 function reset() {
@@ -268,7 +274,7 @@ function reset() {
   Object.assign(form, {
     start_date: DEFAULT_DATES.start,
     end_date: DEFAULT_DATES.end,
-    lookback_months: 1,
+    lookback_months: 6,
     initial_cash: 1_000_000,
     per_trade_amount: 100_000,
     max_positions: 5,
