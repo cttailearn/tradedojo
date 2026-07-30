@@ -21,9 +21,27 @@ logger = logging.getLogger("scheduler")
 
 
 # ---------- DB 读写 ----------
+# 已被新组合任务(fetch_all / sync_latest)替代的旧任务,启动时自动清理
+_LEGACY_SCHEDULER_TASKS = (
+    "stock_list", "index_daily", "kline_daily", "stock_enrich",
+)
+
+
 def _ensure_jobs_seeded():
-    """首次启动时把 DEFAULT_JOBS 写入 scheduler_job 表(已存在则跳过)"""
+    """首次启动时把 DEFAULT_JOBS 写入 scheduler_job 表(已存在则跳过)。
+
+    同时清理已被 fetch_all / sync_latest 替代的旧 4 类任务。
+    """
     with get_conn() as conn:
+        # 1) 清掉旧任务(无论 enabled 与否)
+        cur = conn.execute(
+            f"DELETE FROM scheduler_job WHERE task IN ({','.join('?' * len(_LEGACY_SCHEDULER_TASKS))})",
+            _LEGACY_SCHEDULER_TASKS,
+        )
+        if cur.rowcount:
+            logger.info(f"[Scheduler] 已清理 {cur.rowcount} 个旧任务")
+
+        # 2) Seed 新任务(DEFAULT_JOBS),已存在则跳过
         existing = {r[0] for r in conn.execute("SELECT task FROM scheduler_job").fetchall()}
         for task, cron, enabled, params in DEFAULT_JOBS:
             if task not in existing:

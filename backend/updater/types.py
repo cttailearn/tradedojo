@@ -11,12 +11,14 @@ class TaskType(str, Enum):
     INDEX_DAILY = "index_daily"     # 主要指数日线
     KLINE_DAILY = "kline_daily"     # 日 K 线(含 mode=full/smart)
 
+    # ---------- 组合型任务(面向终端用户的两个入口) ----------
+    FETCH_ALL = "fetch_all"         # 全量拉取:股票列表 + 行业 + K线 + 指数
+    SYNC_LATEST = "sync_latest"     # 增量同步:仅拉最近 K线 + 指数
+
 
 # 调度器默认 cron 配置(每类一个独立 job)
+# 日常调度只需 sync_latest 即可;fetch_all 通常首次或手动触发
 DEFAULT_JOBS = [
     # task,         cron,            enabled, params
-    ("stock_list",   "0 8 * * 1-5",   True,   {}),
-    ("index_daily",  "15 16 * * 1-5", True,   {}),
-    ("kline_daily",  "30 16 * * 1-5", True,   {"mode": "smart", "adjust": "qfq", "days_back": 365, "workers": 6}),
-    ("stock_enrich", "0 2 * * 0",     False,  {"limit": None}),
+    ("sync_latest",  "30 16 * * 1-5", True,   {"adjust": "qfq", "days_back": 10, "workers": 4}),
 ]

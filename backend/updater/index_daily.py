@@ -11,16 +11,8 @@ from pydantic import BaseModel, Field
 from db.database import get_conn
 from fetcher.manager import fetcher_manager
 from .base import BaseUpdater
+from .indices import KEY_INDEX_CODES
 from .types import TaskType
-
-
-DEFAULT_INDICES = [
-    "sh000001",  # 上证指数
-    "sh000300",  # 沪深300
-    "sh000016",  # 上证50
-    "sz399001",  # 深证成指
-    "sz399006",  # 创业板指
-]
 
 
 class IndexDailyParams(BaseModel):
@@ -39,7 +31,7 @@ class IndexDailyUpdater(BaseUpdater):
         if fetcher is None:
             raise RuntimeError("无可用数据源")
 
-        codes = self.params.codes or DEFAULT_INDICES
+        codes = self.params.codes or KEY_INDEX_CODES
         self.logger.info(f"{self._log_prefix} 更新指数 {codes}")
 
         success = 0

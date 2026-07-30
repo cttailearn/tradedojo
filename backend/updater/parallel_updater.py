@@ -559,8 +559,8 @@ class ParallelKlineUpdater:
     # ---------- 指数更新 ----------
     def update_index(self, codes: list = None) -> int:
         """更新主要指数"""
-        codes = codes or ["sh000001", "sh000300", "sh000016",
-                          "sz399001", "sz399006"]
+        from updater.indices import KEY_INDEX_CODES
+        codes = codes or KEY_INDEX_CODES
         count = 0
         for code in codes:
             try:
@@ -676,8 +676,8 @@ class ParallelKlineUpdater:
             ]
 
             # 4. 指数检测
-            expected_indices = ["sh000001", "sh000300", "sh000016",
-                                "sz399001", "sz399006"]
+            from updater.indices import KEY_INDEX_CODES
+            expected_indices = KEY_INDEX_CODES
             for code in expected_indices:
                 row = query_one(
                     "SELECT MAX(trade_date), COUNT(*) FROM index_daily WHERE code=?",

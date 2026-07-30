@@ -33,12 +33,26 @@ def _load_kline_daily():
     return KlineDailyUpdater, KlineDailyParams
 
 
+def _load_fetch_all():
+    from .composite import FetchAllUpdater, FetchAllParams
+    return FetchAllUpdater, FetchAllParams
+
+
+def _load_sync_latest():
+    from .composite import SyncLatestUpdater, SyncLatestParams
+    return SyncLatestUpdater, SyncLatestParams
+
+
 # TaskType -> (UpdaterClass, ParamModelClass)
 REGISTER: Dict[TaskType, Tuple[Type[BaseUpdater], type]] = {
+    # ---------- 基础 updater(保留,scheduler/单步任务仍可用) ----------
     TaskType.STOCK_LIST:   _load_stock_list(),
     TaskType.STOCK_ENRICH: _load_stock_enrich(),
     TaskType.INDEX_DAILY:  _load_index_daily(),
     TaskType.KLINE_DAILY:  _load_kline_daily(),
+    # ---------- 组合型 updater(面向用户的两个入口) ----------
+    TaskType.FETCH_ALL:    _load_fetch_all(),
+    TaskType.SYNC_LATEST:  _load_sync_latest(),
 }
 
 
@@ -46,11 +60,14 @@ REGISTER: Dict[TaskType, Tuple[Type[BaseUpdater], type]] = {
 # 旧前端/旧 API 仍可能传 task="daily_smart" / "index" / "enrich" 等
 LEGACY_TASK_ALIAS = {
     # 旧 task 字符串      新 TaskType,         默认参数覆盖
-    "stock_list":  (TaskType.STOCK_LIST,   {}),
-    "index":       (TaskType.INDEX_DAILY,  {}),
-    "kline_daily": (TaskType.KLINE_DAILY,  {"mode": "full"}),
-    "enrich":      (TaskType.STOCK_ENRICH, {}),
-    "daily_smart": (TaskType.KLINE_DAILY,  {"mode": "smart", "days_back": 10}),
+    "stock_list":   (TaskType.STOCK_LIST,   {}),
+    "index":        (TaskType.INDEX_DAILY,  {}),
+    "kline_daily":  (TaskType.KLINE_DAILY,  {"mode": "full"}),
+    "enrich":       (TaskType.STOCK_ENRICH, {}),
+    "daily_smart":  (TaskType.SYNC_LATEST,  {"days_back": 10}),
+    # 旧 API 完整一键更新 → 新全量入口
+    "full_update":  (TaskType.FETCH_ALL,    {"days_back": 365}),
+    "oneclick":     (TaskType.FETCH_ALL,    {"days_back": 365}),
 }
 
 

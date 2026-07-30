@@ -26,7 +26,12 @@ from app.models import (
     SetUserActiveRequest,
     TrainingUserDetailResponse,
 )
-from db.database import execute, get_conn, query_all, query_one
+from db.database import (
+    user_execute as execute,
+    get_user_conn as get_conn,
+    user_query_all as query_all,
+    user_query_one as query_one,
+)
 
 router = APIRouter(
     prefix="/api/train/admin",

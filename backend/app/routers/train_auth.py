@@ -22,7 +22,12 @@ from app.auth import create_access_token
 from app.config import settings
 from app.deps_train import get_current_train_user
 from app.rate_limit import limiter
-from db.database import execute, get_conn, query_all, query_one
+from db.database import (
+    user_execute as execute,
+    get_user_conn as get_conn,
+    user_query_all as query_all,
+    user_query_one as query_one,
+)
 
 
 log = logging.getLogger("app.train.auth")

@@ -24,7 +24,15 @@ from app.models import (
 from app.config import settings
 from app.rate_limit import limiter
 from app.utils import calc_session_cost
-from db.database import execute, get_conn, query_all, query_one
+from db.database import (
+    user_execute as execute,
+    get_user_conn as get_conn,
+    user_query_all as query_all,
+    user_query_one as query_one,
+    # 训练路由内还要查 stock 库:
+    query_all as stock_query_all,
+    query_one as stock_query_one,
+)
 
 
 log = logging.getLogger("app.train.trade")
@@ -63,7 +71,7 @@ def _pick_random_stock(req: TrainingSetupRequest) -> dict:
 
     base_where_sql = ' AND '.join(where)
     # Step 1: 拉候选(只查 stock_list,带可见字段)—— 通常几千行,几乎瞬间
-    rows = query_all(
+    rows = stock_query_all(
         f"SELECT s.code, s.name, s.industry, s.market FROM stock_list s "
         f"WHERE {base_where_sql} ORDER BY s.code ASC",
         tuple(params),
@@ -73,7 +81,7 @@ def _pick_random_stock(req: TrainingSetupRequest) -> dict:
     random.shuffle(rows)
 
     def _has_enough_kline(code: str) -> bool:
-        cnt = query_one(
+        cnt = stock_query_one(
             "SELECT COUNT(*) FROM kline_daily "
             "WHERE code = ? AND adjust_type = 'qfq' "
             "  AND trade_date <= ?",
@@ -100,7 +108,7 @@ def _pick_random_stock(req: TrainingSetupRequest) -> dict:
             continue
         # 还要求区间内全部存在(训练区间被节假日/退市切片):
         # 用 1 次 SELECT 看下 MIN/MAX
-        rng = query_one(
+        rng = stock_query_one(
             "SELECT MIN(trade_date), MAX(trade_date) FROM kline_daily "
             "WHERE code = ? AND adjust_type = 'qfq'",
             (code,),
@@ -117,8 +125,8 @@ def _pick_random_stock(req: TrainingSetupRequest) -> dict:
 
 
 def _kline_in_window(code: str, start_date: str, end_date: str) -> list:
-    """读取某只股票在 [start, end] 区间的 K 线"""
-    rows = query_all(
+    """读取某只股票在 [start, end] 区间的 K 线 (stock.db)"""
+    rows = stock_query_all(
         """SELECT trade_date, open, high, low, close, pre_close,
                   change_amount, pct_change, volume, amount, turnover_rate
            FROM kline_daily
@@ -380,11 +388,12 @@ def start_session(req: TrainingSetupRequest, request: Request, response: Respons
 
         # 初始揭示 = 训练开始日,但若 start_date 是节假日/周末没有 K 线,
         # 自动顺延到该股票的下个实际交易日,否则前端会拿到空 K 线图
-        cur = conn.execute(
+        # 注意:用户会话在 user_tx 内,但 kline_daily 在 stock.db,必须单独查
+        cur = stock_query_one(
             "SELECT MIN(trade_date) FROM kline_daily "
             "WHERE code = ? AND adjust_type = 'qfq' AND trade_date >= ?",
             (stock["code"], req.start_date),
-        ).fetchone()
+        )
         current_dt = (cur[0] if cur and cur[0] else req.start_date)
 
         cur = conn.execute(
@@ -439,7 +448,7 @@ def advance(session_id: int, req: AdvanceRequest, request: Request, response: Re
         raise HTTPException(status_code=400, detail="该训练已结束")
 
     # 找接下来 N 个交易日 (<= end_date)
-    rows = query_all(
+    rows = stock_query_all(
         "SELECT trade_date FROM kline_daily "
         "WHERE code = ? AND adjust_type = 'qfq' AND trade_date > ? AND trade_date <= ? "
         "ORDER BY trade_date ASC LIMIT ?",
@@ -478,7 +487,7 @@ def advance(session_id: int, req: AdvanceRequest, request: Request, response: Re
         code_list = [c[0] for c in pos_codes]
         placeholders = ",".join("?" * len(code_list))
         close_map = {}   # code -> { trade_date -> close }
-        for r in query_all(
+        for r in stock_query_all(
             f"SELECT code, trade_date, close FROM kline_daily "
             f"WHERE code IN ({placeholders}) AND adjust_type = 'qfq' "
             f"  AND trade_date IN ({','.join('?'*len(advance_dates))})",
@@ -602,7 +611,7 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
 
     current_dt = sess["reveal_date"] or sess["start_date"]
     # 撮合价取<reveal_date 及之后>的第一根 bar(若 reveal 是节假日则下一交易日)
-    bar_row = query_one(
+    bar_row = stock_query_one(
         "SELECT trade_date, open, high, low, close FROM kline_daily "
         "WHERE code = ? AND adjust_type = 'qfq' AND trade_date >= ? "
         "ORDER BY trade_date ASC LIMIT 1",

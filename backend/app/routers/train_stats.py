@@ -13,7 +13,7 @@ from statistics import mean, median
 from typing import List, Dict, Any
 
 from fastapi import APIRouter, Depends, Query
-from db.database import query_all, query_one
+from db.database import user_query_all as query_all, user_query_one as query_one
 from app.deps_train import get_current_train_user
 
 router = APIRouter(prefix="/api/train/stats", tags=["train-stats"])

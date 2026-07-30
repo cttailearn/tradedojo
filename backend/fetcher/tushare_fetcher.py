@@ -124,10 +124,30 @@ class TushareFetcher(BaseFetcher):
         if df is None or df.empty:
             return pd.DataFrame()
 
+        # 补齐 turnover_rate:Tushare 的 daily 接口不含此字段,
+        # 需调 daily_basic(ts_code, trade_date, turnover_rate) 一次性按日期补齐。
+        turnover_map: dict = {}
+        try:
+            basic_df = self._pro.daily_basic(
+                ts_code=ts_code, start_date=start, end_date=end,
+                fields="ts_code,trade_date,turnover_rate",
+            )
+            if basic_df is not None and not basic_df.empty and "turnover_rate" in basic_df.columns:
+                turnover_map = dict(
+                    zip(
+                        basic_df["trade_date"].astype(str),
+                        basic_df["turnover_rate"].astype(float),
+                    )
+                )
+        except Exception as e:
+            # daily_basic 失败不影响主流程,turnover_rate 留空
+            logger.debug(f"[Tushare] {ts_code} daily_basic 失败(忽略): {e}")
+
         # 字段: ts_code, trade_date, open, high, low, close, pre_close, change, pct_chg, vol, amount
+        trade_dates = df["trade_date"].astype(str)
         out = pd.DataFrame({
             "code": code,
-            "trade_date": df["trade_date"].astype(str),
+            "trade_date": trade_dates,
             "open": df["open"].astype(float),
             "high": df["high"].astype(float),
             "low": df["low"].astype(float),
@@ -137,7 +157,7 @@ class TushareFetcher(BaseFetcher):
             "pct_change": df["pct_chg"].astype(float) if "pct_chg" in df.columns else None,
             "volume": df["vol"].astype(float) * 100 if "vol" in df.columns else 0,  # tushare vol 单位是手,转股
             "amount": df["amount"].astype(float) if "amount" in df.columns else None,
-            "turnover_rate": None,
+            "turnover_rate": trade_dates.map(turnover_map) if turnover_map else None,
             "adjust_type": adjust if adjust else "none",
         })
         return out

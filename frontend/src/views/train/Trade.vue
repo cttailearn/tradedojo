@@ -76,7 +76,7 @@
 
     <!-- 主体:左 K 线,右 资金曲线 + 交易面板 -->
     <el-row :gutter="16" style="margin-top: 16px;">
-      <el-col :span="16">
+      <el-col :xs="24" :sm="24" :md="16" :lg="16">
         <div class="page-card">
           <div class="chart-head">
             <div>
@@ -149,7 +149,7 @@
         </div>
       </el-col>
 
-      <el-col :span="8">
+      <el-col :xs="24" :sm="24" :md="8" :lg="8">
         <div class="page-card">
           <h3 class="page-title">下单</h3>
           <el-tabs v-model="tradeTab">
@@ -557,10 +557,10 @@ async function triggerKlineUpdate() {
   loadingKlineUpdate.value = true
   try {
     const r = await tasksApi.trigger({
-      task: 'kline_daily',
+      task: 'sync_latest',
       params: {
-        mode: 'smart', adjust: 'qfq', days_back: 365,
-        workers: 4, codes: [code],
+        days_back: 365, adjust: 'qfq',
+        workers: 2, codes: [code],
       },
     })
     ElMessage.success(
@@ -644,6 +644,8 @@ function renderKline() {
       name: `对照(${benchCode.value})%`,
       type: 'line',
       data: aligned,
+      // 对照指数画在主图(grid[0])上方,使用 xAxis[0] + yAxis[1](左侧 0~100% 范围)
+      xAxisIndex: 0,
       yAxisIndex: 1,
       smooth: true,
       showSymbol: false,
@@ -960,18 +962,32 @@ function resize() {
   equityChart && equityChart.resize()
 }
 
+let _chartRO = null
+
 onMounted(async () => {
   klineChart = echarts.init(klineChartEl.value)
   equityChart = echarts.init(equityChartEl.value)
   window.addEventListener('resize', resize)
   window.addEventListener('keydown', onKeydown)
+  // 监听 K线容器自身尺寸变化(响应式布局时 panel 宽度变了,window resize 不会触发)
+  if (typeof ResizeObserver !== 'undefined') {
+    _chartRO = new ResizeObserver(() => {
+      try { klineChart && klineChart.resize() } catch {}
+      try { equityChart && equityChart.resize() } catch {}
+    })
+    if (klineChartEl.value) _chartRO.observe(klineChartEl.value)
+    if (equityChartEl.value) _chartRO.observe(equityChartEl.value)
+  }
   await loadSession()
   await Promise.all([loadKline(), loadEquity(), loadBenchmarkList()])
+  // 数据就绪后再 resize 一次,确保拿到正确的容器尺寸
+  setTimeout(resize, 0)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', resize)
   window.removeEventListener('keydown', onKeydown)
+  if (_chartRO) { _chartRO.disconnect(); _chartRO = null }
   klineChart && klineChart.dispose()
   equityChart && equityChart.dispose()
 })
@@ -1035,7 +1051,7 @@ watch(() => session.value?.current_date, async () => {
 .bench-pick { display: flex; align-items: center; gap: 6px; }
 .kline-chart {
   width: 100%;
-  height: 460px;
+  height: clamp(360px, 55vh, 520px);   /* 响应式高度 */
   background: #0a0e1a;
   border-radius: 6px;
   padding: 4px 0;
@@ -1049,4 +1065,41 @@ watch(() => session.value?.current_date, async () => {
 .muted { color: #b4bcd0; }
 .estimated-qty { margin-top: 4px; font-size: 12px; color: #606266; }
 .preset-hint { font-size: 11px; color: #909399; margin-top: 4px; }
+
+/* ============ 响应式适配 ============ */
+/* 平板:md 以下(<992px)改成上下堆叠,横向滚动表格 */
+@media (max-width: 991.98px) {
+  .metric-row-1 .m-block { min-width: 45%; padding: 4px 8px; }
+  .metric-row-2 { flex-direction: column; align-items: stretch; }
+  .progress-block { min-width: 100%; padding: 0; margin-bottom: 8px; }
+  .action-block { justify-content: flex-start; }
+  .action-block .el-button-group { display: flex; flex: 1; }
+  .action-block .el-button-group .el-button { flex: 1; padding: 8px 4px; font-size: 12px; }
+}
+
+/* 手机:sm 以下(<768px) */
+@media (max-width: 767.98px) {
+  .trade { padding: 0; }
+  .metric-bar { padding: 10px 12px; }
+  .metric-row-1 .m-block { min-width: 47%; border-right: none; padding: 4px 6px; }
+  .metric-row-1 .m-block.profit { min-width: 100%; }
+  .m-block .val { font-size: 16px; }
+  .m-block.profit .val { font-size: 18px; }
+  .page-card { padding: 8px 10px; border-radius: 4px; }
+  .chart-head { gap: 4px; }
+  .chart-head .t { font-size: 13px; }
+  .chart-head .hint { font-size: 11px; }
+  .kline-chart { height: 60vh; min-height: 320px; }
+  .progress-text { font-size: 11px; flex-wrap: wrap; gap: 4px; }
+  .progress-hint { font-size: 11px; }
+  /* 表格在窄屏允许横向滚动 */
+  .page-card :deep(.el-table) { font-size: 12px; }
+  .page-card :deep(.el-table .cell) { padding: 0 4px; }
+}
+
+/* 大屏优化(>=1600px) */
+@media (min-width: 1600px) {
+  .kline-chart { height: 540px; }
+  .equity-chart { height: 240px; }
+}
 </style>

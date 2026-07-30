@@ -25,10 +25,22 @@
             <strong>{{ row.name }}</strong>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="160">
           <template #default="{ row }">
-            <el-tag v-if="row.is_primary" type="success" size="small">主源</el-tag>
+            <el-tag v-if="row.is_primary" type="success" size="small">主源(运行中)</el-tag>
+            <el-tag v-else-if="row.is_preferred" type="warning" size="small">备选(自动切回中)</el-tag>
             <el-tag v-else type="info" size="small">备选</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="连续失败" width="100" align="center">
+          <template #default="{ row }">
+            <span v-if="row.consecutive_fail >= 3" style="color:#f56c6c; font-weight:600;">
+              {{ row.consecutive_fail }}
+            </span>
+            <span v-else-if="row.consecutive_fail > 0" style="color:#e6a23c;">
+              {{ row.consecutive_fail }}
+            </span>
+            <span v-else style="color:#67c23a;">0</span>
           </template>
         </el-table-column>
         <el-table-column label="需要 Token" width="100">
@@ -38,7 +50,7 @@
             <span style="margin-left:4px;">{{ row.requires_token ? '是' : '否' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="成功/失败" width="120" align="center">
+        <el-table-column label="累计成功/失败" width="140" align="center">
           <template #default="{ row }">
             <span style="color:#67c23a;">{{ row.success }}</span>
             <span style="color:#c0c4cc;">/</span>
@@ -99,13 +111,13 @@
     <div class="page-card">
       <h3 class="page-title"><el-icon><InfoFilled /></el-icon>关于数据源</h3>
       <el-alert type="info" :closable="false" show-icon>
-        <template #title>多数据源 + 自动 failover</template>
+        <template #title>多数据源 + 自动 failover + 健康度自动切换</template>
         <div style="line-height:1.8;">
-          • <strong>AKShare</strong>: 默认主源,免注册,聚合多源(东方财富/新浪等)。无需 token,开箱即用。<br>
-          • <strong>Baostock</strong>: 免费备选,专注 A 股日 K,数据准确度较高。在 AKShare 限流时自动接替。<br>
+          • <strong>Baostock</strong>: 默认主源,免注册、稳定、不限速、含换手率/成交量。<br>
+          • <strong>AKShare</strong>: 备选源,聚合多源(东方财富/新浪等)。在 Baostock 出问题时自动接替。<br>
           • <strong>Tushare</strong>: 数据质量最高,但需注册获取 token。设置环境变量
           <code>TUSHARE_TOKEN=xxx</code> 后重启服务即可启用。<br>
-          • 当主源调用失败时,系统会自动按顺序尝试其他数据源,无需手动切换。
+          • <b>自动切换规则</b>:主源连续失败 3 次 → 自动切到备选;主源恢复后累计成功 5 次 → 自动切回。
         </div>
       </el-alert>
     </div>

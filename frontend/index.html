@@ -10,13 +10,14 @@
       - default-src 'self': 仅允许同源资源
       - script-src/style-src 'unsafe-inline': Vite 内联注入 HMR; 生产构建后只会有 hash 化的外链脚本
       - connect-src 'self' http://127.0.0.1:8000: dev 时允许代理到后端
-      - frame-ancestors 'none': 禁止被嵌入 iframe(防 clickjacking)
+      - frame-ancestors 必须通过 HTTP header 设置,不能在 meta 里写
+        (浏览器会忽略并报警告)。该项由 nginx / FastAPI 中间件下发 X-Frame-Options 处理
     -->
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:8000 ws:; frame-ancestors 'none'; base-uri 'self'; object-src 'none';" />
+          content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:8000 https://api.cttai.art ws:; base-uri 'self'; object-src 'none';" />
     <meta http-equiv="X-Content-Type-Options" content="nosniff" />
     <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
-    <title>Tradedojo · 智能股票数据平台</title>
+    <title>操盘道场 · K线交易训练平台</title>
   </head>
   <body>
     <div id="app"></div>

@@ -87,117 +87,86 @@
 
           <!-- 按数据类型 Tab -->
           <el-tabs v-model="activeTab" type="card">
-            <!-- 1) 股票基础信息 -->
-            <el-tab-pane name="stock_list">
+            <!-- 1) 拉取数据(全量) -->
+            <el-tab-pane name="fetch_all">
               <template #label>
-                <span><el-icon><List /></el-icon>股票基础信息</span>
+                <span><el-icon><Download /></el-icon>拉取数据(全量)</span>
               </template>
               <JobPanel
-                v-if="jobByTask('stock_list')"
-                :job="jobByTask('stock_list')"
-                :saving="savingTask === 'stock_list'"
-                :triggering="triggeringTask === 'stock_list'"
-                @save="(body) => saveJob('stock_list', body)"
-                @trigger="triggerJob('stock_list')"
+                v-if="jobByTask('fetch_all')"
+                :job="jobByTask('fetch_all')"
+                :saving="savingTask === 'fetch_all'"
+                :triggering="triggeringTask === 'fetch_all'"
+                @save="(body) => saveJob('fetch_all', body)"
+                @trigger="triggerJob('fetch_all')"
               >
                 <template #params>
-                  <el-form-item label="强制全量">
-                    <el-switch v-model="forms.stock_list.full_refresh" />
-                    <span style="margin-left:8px;color:#909399;font-size:12px;">
-                      ON 时清空 stock_list 后重建(IPO/退市改名时使用)
-                    </span>
-                  </el-form-item>
-                </template>
-              </JobPanel>
-            </el-tab-pane>
-
-            <!-- 2) 主要指数 -->
-            <el-tab-pane name="index_daily">
-              <template #label>
-                <span><el-icon><TrendCharts /></el-icon>主要指数</span>
-              </template>
-              <JobPanel
-                v-if="jobByTask('index_daily')"
-                :job="jobByTask('index_daily')"
-                :saving="savingTask === 'index_daily'"
-                :triggering="triggeringTask === 'index_daily'"
-                @save="(body) => saveJob('index_daily', body)"
-                @trigger="triggerJob('index_daily')"
-              >
-                <template #params>
-                  <el-alert type="info" :closable="false">
-                    默认维护 5 只主要指数(sh000001 / sh000300 / sh000016 / sz399001 / sz399006)。
+                  <el-alert type="info" :closable="false" style="margin-bottom: 8px;">
+                    一次性完成:股票列表 → 行业映射 → 全市场 K线 → 主要指数。<br/>
+                    适合首次部署 / 换数据源 / 长时间未更新。日常请用「增量同步」。
                   </el-alert>
-                </template>
-              </JobPanel>
-            </el-tab-pane>
-
-            <!-- 3) 日 K 线 -->
-            <el-tab-pane name="kline_daily">
-              <template #label>
-                <span><el-icon><DataLine /></el-icon>日 K 线</span>
-              </template>
-              <JobPanel
-                v-if="jobByTask('kline_daily')"
-                :job="jobByTask('kline_daily')"
-                :saving="savingTask === 'kline_daily'"
-                :triggering="triggeringTask === 'kline_daily'"
-                @save="(body) => saveJob('kline_daily', body)"
-                @trigger="triggerJob('kline_daily')"
-              >
-                <template #params>
-                  <el-form-item label="更新模式">
-                    <el-radio-group v-model="forms.kline_daily.mode">
-                      <el-radio-button value="smart">智能增量</el-radio-button>
-                      <el-radio-button value="full">全量回溯</el-radio-button>
-                    </el-radio-group>
-                    <span style="margin-left:8px;color:#909399;font-size:12px;">
-                      smart=仅缺失/过期股票;full=按回溯天数全量重拉
-                    </span>
+                  <el-form-item label="K线回溯">
+                    <el-input-number v-model="forms.fetch_all.days_back" :min="30" :max="3650" />
+                    <span style="margin-left:8px;color:#909399;font-size:12px;">天</span>
                   </el-form-item>
                   <el-form-item label="复权方式">
-                    <el-radio-group v-model="forms.kline_daily.adjust">
+                    <el-radio-group v-model="forms.fetch_all.adjust">
                       <el-radio-button value="qfq">前复权</el-radio-button>
                       <el-radio-button value="hfq">后复权</el-radio-button>
                     </el-radio-group>
                   </el-form-item>
-                  <el-form-item label="回溯天数">
-                    <el-input-number v-model="forms.kline_daily.days_back" :min="30" :max="3650" />
-                    <span style="margin-left:8px;color:#909399;font-size:12px;">
-                      full 模式回溯;smart 模式为增量窗口
-                    </span>
-                  </el-form-item>
                   <el-form-item label="并发线程">
-                    <el-input-number v-model="forms.kline_daily.workers" :min="1" :max="32" />
+                    <el-input-number v-model="forms.fetch_all.workers" :min="1" :max="16" />
+                    <span style="margin-left:8px;color:#909399;font-size:12px;">建议 ≤ 4</span>
+                  </el-form-item>
+                  <el-form-item label="跳过增强">
+                    <el-switch v-model="forms.fetch_all.skip_enrich" />
+                    <span style="margin-left:8px;color:#909399;font-size:12px;">
+                      ON=跳过 stock_enrich(更快);OFF=行业映射 + 上市日期
+                    </span>
                   </el-form-item>
                 </template>
               </JobPanel>
             </el-tab-pane>
 
-            <!-- 4) 股票信息增强 -->
-            <el-tab-pane name="stock_enrich">
+            <!-- 2) 增量同步 -->
+            <el-tab-pane name="sync_latest">
               <template #label>
-                <span><el-icon><MagicStick /></el-icon>股票信息增强</span>
+                <span><el-icon><Refresh /></el-icon>增量同步</span>
               </template>
               <JobPanel
-                v-if="jobByTask('stock_enrich')"
-                :job="jobByTask('stock_enrich')"
-                :saving="savingTask === 'stock_enrich'"
-                :triggering="triggeringTask === 'stock_enrich'"
-                @save="(body) => saveJob('stock_enrich', body)"
-                @trigger="triggerJob('stock_enrich')"
+                v-if="jobByTask('sync_latest')"
+                :job="jobByTask('sync_latest')"
+                :saving="savingTask === 'sync_latest'"
+                :triggering="triggeringTask === 'sync_latest'"
+                @save="(body) => saveJob('sync_latest', body)"
+                @trigger="triggerJob('sync_latest')"
               >
                 <template #params>
-                  <el-form-item label="限制条数">
-                    <el-input-number v-model="forms.stock_enrich.limit" :min="0" />
+                  <el-alert type="info" :closable="false" style="margin-bottom: 8px;">
+                    智能增量:同步股票列表(新上市/退市)+ 仅拉缺失/过期 K线 + 主要指数。<br/>
+                    推荐每天 16:30 调度一次。
+                  </el-alert>
+                  <el-form-item label="回溯天数">
+                    <el-input-number v-model="forms.sync_latest.days_back" :min="1" :max="120" />
                     <span style="margin-left:8px;color:#909399;font-size:12px;">
-                      0 = 处理全部;测试时设小值
+                      覆盖最近交易日(一般 10 天够用)
                     </span>
                   </el-form-item>
-                  <el-form-item label="Phase 2 并发">
-                    <el-input-number v-model="forms.stock_enrich.workers" :min="0" :max="16" />
+                  <el-form-item label="复权方式">
+                    <el-radio-group v-model="forms.sync_latest.adjust">
+                      <el-radio-button value="qfq">前复权</el-radio-button>
+                      <el-radio-button value="hfq">后复权</el-radio-button>
+                    </el-radio-group>
+                  </el-form-item>
+                  <el-form-item label="并发线程">
+                    <el-input-number v-model="forms.sync_latest.workers" :min="1" :max="16" />
+                    <span style="margin-left:8px;color:#909399;font-size:12px;">建议 ≤ 4</span>
+                  </el-form-item>
+                  <el-form-item label="同步列表">
+                    <el-switch v-model="forms.sync_latest.update_stock_list" />
                     <span style="margin-left:8px;color:#909399;font-size:12px;">
-                      0 = 跳过 profile API(用 K线 兜底取上市日期)
+                      ON=同时 UPSERT 股票列表(捕获新上市/退市)
                     </span>
                   </el-form-item>
                 </template>
@@ -210,37 +179,55 @@
         <el-tab-pane name="trigger">
           <template #label><span><el-icon><VideoPlay /></el-icon>即时触发</span></template>
 
+          <el-alert type="info" :closable="false" show-icon style="margin-bottom: 16px;">
+            仅两个入口:<b>拉取数据</b>(首次/换源)和<b>增量同步</b>(日常)。所有拉取任务会写到 <code>data/stock.db</code>。
+          </el-alert>
+
           <el-form :model="triggerForm" label-width="100px" style="max-width:640px;">
             <el-form-item label="任务类型">
-              <el-select v-model="triggerForm.task" style="width:240px;">
-                <el-option label="更新股票列表 (stock_list)" value="stock_list" />
-                <el-option label="主要指数 (index_daily)" value="index_daily" />
-                <el-option label="日 K 线 (kline_daily)" value="kline_daily" />
-                <el-option label="股票信息增强 (stock_enrich)" value="stock_enrich" />
-                <el-option label="[旧] 主要指数 (index)" value="index" />
-                <el-option label="[旧] 增强信息 (enrich)" value="enrich" />
-                <el-option label="[旧] 智能增量 (daily_smart)" value="daily_smart" />
-              </el-select>
+              <el-radio-group v-model="triggerForm.task" style="display:flex; gap:12px;">
+                <el-radio-button value="fetch_all">
+                  <el-icon><Download /></el-icon>拉取数据
+                </el-radio-button>
+                <el-radio-button value="sync_latest">
+                  <el-icon><Refresh /></el-icon>增量同步
+                </el-radio-button>
+              </el-radio-group>
             </el-form-item>
 
-            <template v-if="triggerForm.task === 'kline_daily' || triggerForm.task === 'daily_smart'">
-              <el-form-item label="更新模式">
-                <el-radio-group v-model="triggerForm.mode">
-                  <el-radio-button value="smart">智能增量</el-radio-button>
-                  <el-radio-button value="full">全量回溯</el-radio-button>
-                </el-radio-group>
-              </el-form-item>
-              <el-form-item label="复权方式">
-                <el-radio-group v-model="triggerForm.adjust">
-                  <el-radio-button value="qfq">前复权</el-radio-button>
-                  <el-radio-button value="hfq">后复权</el-radio-button>
-                </el-radio-group>
-              </el-form-item>
-              <el-form-item label="回溯天数">
+            <!-- 公共:复权方式 -->
+            <el-form-item label="复权方式">
+              <el-radio-group v-model="triggerForm.adjust">
+                <el-radio-button value="qfq">前复权</el-radio-button>
+                <el-radio-button value="hfq">后复权</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+
+            <!-- fetch_all 专属 -->
+            <template v-if="triggerForm.task === 'fetch_all'">
+              <el-form-item label="K线回溯">
                 <el-input-number v-model="triggerForm.days_back" :min="30" :max="3650" />
+                <span style="margin-left:8px;color:#909399;font-size:12px;">天</span>
               </el-form-item>
               <el-form-item label="并发线程">
-                <el-input-number v-model="triggerForm.workers" :min="1" :max="32" />
+                <el-input-number v-model="triggerForm.workers" :min="1" :max="16" />
+              </el-form-item>
+              <el-form-item label="跳过增强">
+                <el-switch v-model="triggerForm.skip_enrich" />
+                <span style="margin-left:8px;color:#909399;font-size:12px;">
+                  跳过可大幅加速(但行业映射会缺)
+                </span>
+              </el-form-item>
+            </template>
+
+            <!-- sync_latest 专属 -->
+            <template v-if="triggerForm.task === 'sync_latest'">
+              <el-form-item label="回溯天数">
+                <el-input-number v-model="triggerForm.days_back" :min="1" :max="120" />
+                <span style="margin-left:8px;color:#909399;font-size:12px;">覆盖最近交易日</span>
+              </el-form-item>
+              <el-form-item label="并发线程">
+                <el-input-number v-model="triggerForm.workers" :min="1" :max="16" />
               </el-form-item>
               <el-form-item label="限定代码">
                 <el-input
@@ -249,15 +236,8 @@
                   style="width:380px;"
                 />
               </el-form-item>
-            </template>
-
-            <template v-if="triggerForm.task === 'stock_enrich' || triggerForm.task === 'enrich'">
-              <el-form-item label="限制条数">
-                <el-input-number v-model="triggerForm.limit" :min="0" />
-                <span style="margin-left:8px;color:#909399;font-size:12px;">0 = 处理全部</span>
-              </el-form-item>
-              <el-form-item label="Phase 2 并发">
-                <el-input-number v-model="triggerForm.workers" :min="0" :max="16" />
+              <el-form-item label="同步列表">
+                <el-switch v-model="triggerForm.update_stock_list" />
               </el-form-item>
             </template>
 
@@ -347,20 +327,18 @@ const activeTab = ref('stock_list')
 
 // 各 Tab 的参数表单(保存时合并)
 const forms = reactive({
-  stock_list:    { full_refresh: false },
-  index_daily:   {},
-  kline_daily:   { mode: 'smart', adjust: 'qfq', days_back: 365, workers: 6 },
-  stock_enrich:  { limit: 0, workers: 4 },
+  fetch_all:    { days_back: 365, adjust: 'qfq', workers: 4, skip_enrich: false },
+  sync_latest:  { days_back: 10,  adjust: 'qfq', workers: 4, update_stock_list: true },
 })
 
 // 即时触发 Tab 的表单
 const triggerForm = reactive({
-  task: 'kline_daily',
-  mode: 'smart',
+  task: 'sync_latest',
   adjust: 'qfq',
-  days_back: 365,
-  workers: 6,
-  limit: 0,
+  days_back: 10,
+  workers: 4,
+  skip_enrich: false,
+  update_stock_list: true,
   codesText: '',
 })
 const triggering = ref(false)
@@ -496,19 +474,19 @@ function parseCodes(text) {
 async function doTrigger() {
   const params = {}
   const t = triggerForm.task
-  if (t === 'kline_daily' || t === 'daily_smart') {
-    params.mode = triggerForm.mode
-    params.adjust = triggerForm.adjust
+  params.adjust = triggerForm.adjust
+
+  if (t === 'fetch_all') {
     params.days_back = triggerForm.days_back
     params.workers = triggerForm.workers
+    params.skip_enrich = triggerForm.skip_enrich
+  } else if (t === 'sync_latest') {
+    params.days_back = triggerForm.days_back
+    params.workers = triggerForm.workers
+    params.update_stock_list = triggerForm.update_stock_list
     const codes = parseCodes(triggerForm.codesText)
     if (codes) params.codes = codes
-  } else if (t === 'stock_enrich' || t === 'enrich') {
-    params.limit = triggerForm.limit
-    params.workers = triggerForm.workers
   }
-  // 旧别名 daily_smart 强制 mode=smart
-  if (t === 'daily_smart') params.mode = 'smart'
 
   triggering.value = true
   try {
@@ -535,7 +513,8 @@ async function doResetCheckpoint() {
     )
   } catch { return }
   try {
-    await tasksApi.resetCheckpoint(triggerForm.task)
+    // 新任务 fetch_all / sync_latest 内部使用的子任务断点
+    await tasksApi.resetCheckpoint('kline_daily')
     ElMessage.success('已重置断点')
   } catch (e) {
     ElMessage.error(e.message || e)

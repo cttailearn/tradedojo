@@ -7,31 +7,21 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
+
+# 训练费:每次发起训练固定扣除 100 元(2026-07 起简化定价)
+TRAIN_SESSION_COST = 100.0
 
 
-# 训练费阶梯(与后端保持完全一致,前端 JS 版写在 frontend/src/utils/trainFee.js):
-#   base = 5.0  元
-#   + span_days * 0.05        训练区间每自然日 5 分
-#   + (initial_cash / 1e6) * 20  初始资金每 100 万 +20 元
-#   cap  = 5 ~ 80 元
-def calc_session_cost(start_date: str, end_date: str, initial_cash: float) -> float:
+def calc_session_cost(start_date: str = "", end_date: str = "", initial_cash: float = 0.0) -> float:
     """计算发起一场训练所需的训练资金(元).
 
-    参数:
-        start_date: 训练开始日 (YYYY-MM-DD)
-        end_date:   数据结束日 (YYYY-MM-DD)
-        initial_cash: 初始资金(元)
+    现为固定费用:每次 100 元。与时间窗/初始资金均无关。
 
-    返回: 5 ~ 80 元 之间的实数.
+    参数:
+        start_date: 训练开始日 (YYYY-MM-DD) — 已不再使用,保留签名兼容
+        end_date:   数据结束日 (YYYY-MM-DD) — 已不再使用,保留签名兼容
+        initial_cash: 初始资金(元)         — 已不再使用,保留签名兼容
+
+    返回: 固定 100.0
     """
-    try:
-        span_days = max(1, (
-            datetime.strptime(end_date, "%Y-%m-%d")
-            - datetime.strptime(start_date, "%Y-%m-%d")
-        ).days)
-    except Exception:
-        span_days = 30
-    cash_factor = min(60.0, (float(initial_cash) / 1_000_000.0) * 20.0)
-    cost = min(80.0, max(5.0, 5.0 + span_days * 0.05 + cash_factor))
-    return round(cost, 2)
+    return round(TRAIN_SESSION_COST, 2)

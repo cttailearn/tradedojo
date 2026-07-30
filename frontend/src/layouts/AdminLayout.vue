@@ -21,10 +21,6 @@
           <el-icon><Box /></el-icon>
           <template #title>股票管理</template>
         </el-menu-item>
-        <el-menu-item index="/admin/kline">
-          <el-icon><DataLine /></el-icon>
-          <template #title>K线查询</template>
-        </el-menu-item>
         <el-menu-item index="/admin/scheduler">
           <el-icon><AlarmClock /></el-icon>
           <template #title>数据任务</template>
@@ -123,6 +119,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { authApi } from '@/api/modules'
 
 const router = useRouter()
 const route = useRoute()
@@ -142,8 +139,6 @@ onMounted(async () => {
   // 不在此处强制跳转,让具体页面(如 UsersAdmin)给出友好的引导提示。
   if (!auth.token) return
   try {
-    // 复用 trainApi.me 也能读 /auth/me,但为避免双重 import,这里直接调 api
-    const { authApi } = await import('@/api/modules')
     const me = await authApi.me()
     const payload = me?.data ?? me
     if (payload?.username) {

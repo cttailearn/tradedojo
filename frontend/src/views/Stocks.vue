@@ -18,13 +18,11 @@
         <el-option label="退市" :value="0" />
         <el-option label="全部" :value="null" />
       </el-select>
-      <el-select v-model="filter.min_integrity" placeholder="完整度" clearable style="width:130px;">
-        <el-option label="仅不完整 (0~3)" :value="0" />
-        <el-option label="完整度 ≤ 1" :value="1" />
-        <el-option label="完整度 ≤ 2" :value="2" />
-        <el-option label="缺 K线 (≤ 2)" :value="2" />
-        <el-option label="完整度 ≥ 3" :value="3" />
-        <el-option label="完全完整 (= 4)" :value="4" />
+      <el-select v-model="filter.min_integrity" placeholder="数据完整度" clearable style="width:160px;">
+        <el-option label="全部(0~4)" :value="0" />
+        <el-option label="至少 2 项" :value="2" />
+        <el-option label="至少 3 项" :value="3" />
+        <el-option label="完全齐全(4/4)" :value="4" />
       </el-select>
       <el-button type="primary" @click="load(1)"><el-icon><Search /></el-icon>查询</el-button>
       <el-button @click="reset">重置</el-button>
@@ -47,16 +45,6 @@
       </span>
       <el-button :disabled="!selected.length" :loading="batch.kline" @click="batchUpdateKline">
         <el-icon><DataLine /></el-icon>批量补 K线
-      </el-button>
-      <el-button :disabled="!selected.length" :loading="batch.enrich" @click="batchEnrich">
-        <el-icon><MagicStick /></el-icon>批量增强信息
-      </el-button>
-      <el-divider direction="vertical" />
-      <el-button @click="quickUpdate('stock_list')" :loading="updating.stock_list">
-        <el-icon><Refresh /></el-icon>刷新基础信息(全部)
-      </el-button>
-      <el-button @click="openEnrichDialog" :loading="updating.stock_enrich">
-        <el-icon><MagicStick /></el-icon>增强股票信息(全量)
       </el-button>
     </div>
 
@@ -82,48 +70,55 @@
       </el-table-column>
       <el-table-column prop="list_date" label="上市日期" width="110" sortable>
         <template #default="{ row }">
-          <span v-if="row.has_list_date">{{ row.list_date }}</span>
+          <span v-if="row.has_list_date">{{ formatDate(row.list_date) }}</span>
           <el-tag v-else size="small" type="warning">未填</el-tag>
         </template>
       </el-table-column>
 
-      <!-- 完整度列:4 个小图标 -->
-      <el-table-column label="数据完整度" width="200" sortable :sort-method="(a,b) => a.integrity_score - b.integrity_score">
+      <!-- 数据完整度列:4 个维度 -->
+      <el-table-column label="数据完整度" width="230" sortable :sort-method="(a,b) => a.integrity_score - b.integrity_score">
         <template #default="{ row }">
           <el-tooltip placement="top">
             <template #content>
-              <div v-if="row.has_kline">✓ K线: {{ row.kline_count }} 条 ({{ row.kline_last_date }})</div>
-              <div v-else>✗ K线: 缺失</div>
-              <div v-if="row.has_industry">✓ 行业: {{ row.industry }}</div>
-              <div v-else>✗ 行业: 未填</div>
-              <div v-if="row.has_list_date">✓ 上市日期: {{ row.list_date }}</div>
-              <div v-else>✗ 上市日期: 未填</div>
-              <div v-if="row.last_enriched_at">✓ 已增强: {{ row.last_enriched_at.slice(0,16) }}</div>
-              <div v-else>✗ 未增强</div>
+              <div style="line-height:1.8;">
+                <div>✓ 基础信息: {{ row.name }} / {{ row.market }}</div>
+                <div v-if="row.has_industry">✓ 行业: {{ row.industry }}</div>
+                <div v-else>✗ 行业: <span style="color:#f56c6c;">缺失</span></div>
+                <div v-if="row.has_list_date">✓ 上市日期: {{ formatDate(row.list_date) }}</div>
+                <div v-else>✗ 上市日期: <span style="color:#f56c6c;">缺失</span></div>
+                <div v-if="row.has_kline">
+                  ✓ K线: {{ row.kline_count }} 条,最新 {{ row.kline_last_date }}<br/>
+                  &nbsp;&nbsp;<span :style="{color: row.kline_volume_ok ? '#67c23a' : '#e6a23c'}">·成交量 {{ row.kline_volume_ok ? '✓' : '部分缺失'}}</span><br/>
+                  &nbsp;&nbsp;<span :style="{color: row.kline_turnover_ok ? '#67c23a' : '#e6a23c'}">·换手率 {{ row.kline_turnover_ok ? '✓' : '部分缺失'}}</span>
+                </div>
+                <div v-else>✗ K线: <span style="color:#f56c6c;">未拉取</span></div>
+              </div>
             </template>
-            <span>
-              <el-tag :type="row.has_kline ? 'success' : 'danger'" size="small" style="margin-right:4px;">K</el-tag>
-              <el-tag :type="row.has_industry ? 'success' : 'danger'" size="small" style="margin-right:4px;">行业</el-tag>
-              <el-tag :type="row.has_list_date ? 'success' : 'danger'" size="small" style="margin-right:4px;">上市</el-tag>
-              <el-tag :type="row.last_enriched_at ? 'success' : 'danger'" size="small">增强</el-tag>
-              <span style="margin-left:6px;color:#909399;font-size:12px;">{{ row.integrity_score }}/4</span>
+            <span class="integrity-tags">
+              <el-tag :type="row.has_basic ? 'success' : 'danger'" size="small" effect="dark">基础</el-tag>
+              <el-tag :type="row.has_industry ? 'success' : 'danger'" size="small" effect="dark">行业</el-tag>
+              <el-tag :type="row.has_list_date ? 'success' : 'danger'" size="small" effect="dark">上市</el-tag>
+              <el-tag :type="row.has_kline ? 'success' : 'danger'" size="small" effect="dark">K线</el-tag>
+              <span class="integrity-score">{{ row.integrity_score }}/4</span>
             </span>
           </el-tooltip>
         </template>
       </el-table-column>
 
-      <el-table-column label="K线" width="120">
+      <el-table-column label="K线" width="140">
         <template #default="{ row }">
-          <span v-if="row.has_kline" style="color:#67c23a;">
-            <el-icon><Check /></el-icon>{{ row.kline_count }}
+          <span v-if="row.has_kline">
+            <el-icon style="color:#67c23a;"><Check /></el-icon>
+            {{ row.kline_count }}
+            <span style="color:#909399; font-size:11px;">({{ row.kline_last_date || '-' }})</span>
           </span>
           <span v-else style="color:#f56c6c;">
-            <el-icon><Warning /></el-icon>缺
+            <el-icon><Warning /></el-icon>未拉取
           </span>
         </template>
       </el-table-column>
 
-      <el-table-column label="状态" width="80">
+      <el-table-column label="上市情况" width="90">
         <template #default="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
             {{ row.is_active ? '在市' : '退市' }}
@@ -146,9 +141,6 @@
                 <el-dropdown-item divided
                   command="kline" :icon="DataLine" :disabled="!row.is_active"
                 >补全 K线</el-dropdown-item>
-                <el-dropdown-item
-                  command="enrich" :icon="MagicStick" :disabled="!row.is_active"
-                >补全基础信息</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -179,48 +171,107 @@
           <el-descriptions-item label="完整代码">{{ detail.full_code }}</el-descriptions-item>
           <el-descriptions-item label="市场">{{ (detail.market || '').toUpperCase() }}</el-descriptions-item>
           <el-descriptions-item label="行业">{{ detail.industry || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="上市日期">{{ detail.list_date || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="上市日期">{{ formatDate(detail.list_date) || '-' }}</el-descriptions-item>
           <el-descriptions-item label="K线总数">{{ detail.kline_count.toLocaleString() }}</el-descriptions-item>
           <el-descriptions-item label="K线起始">{{ detail.kline_first_date || '-' }}</el-descriptions-item>
           <el-descriptions-item label="K线最新">{{ detail.kline_last_date || '-' }}</el-descriptions-item>
         </el-descriptions>
         <div style="margin-top:16px;">
-          <el-button type="primary" plain @click="goKline(detail.code)">查看K线</el-button>
+          <el-button type="primary" plain @click="goKline(detail.code, detail.name)">查看K线</el-button>
           <el-button type="warning" plain @click="goBacktest(detail.code)">回测此股</el-button>
         </div>
       </div>
     </el-drawer>
 
     <!-- 信息增强对话框(带 limit / workers 参数) -->
-    <el-dialog v-model="enrichVisible" title="增强股票信息" width="480px">
-      <el-form :model="enrichForm" label-width="110px">
-        <el-form-item label="限制条数">
-          <el-input-number v-model="enrichForm.limit" :min="0" />
-          <span style="margin-left:8px;color:#909399;font-size:12px;">0 = 处理全部</span>
-        </el-form-item>
-        <el-form-item label="Phase 2 并发">
-          <el-input-number v-model="enrichForm.workers" :min="0" :max="16" />
-          <span style="margin-left:8px;color:#909399;font-size:12px;">
-            0 = 跳过 profile API,用 K线 兜底
-          </span>
-        </el-form-item>
-        <el-alert type="warning" :closable="false" show-icon>
-          全市场 5000+ 只股,Phase 2 可能持续数小时。建议先 limit=50 测试,确认无误后再大数量执行。
-        </el-alert>
-      </el-form>
-      <template #footer>
-        <el-button @click="enrichVisible = false">取消</el-button>
-        <el-button type="primary" :loading="updating.stock_enrich" @click="confirmEnrich">开始增强</el-button>
-      </template>
+
+    <!-- K线查看对话框(原 K线查询 功能内嵌) -->
+    <el-dialog
+      v-model="klineVisible"
+      :title="klineTitle"
+      width="980px"
+      top="5vh"
+      @opened="onKlineOpened"
+      @closed="onKlineClosed"
+    >
+      <div class="toolbar" style="margin-bottom: 8px;">
+        <el-select v-model="klineForm.adjust" style="width:100px;" @change="loadKline(1)">
+          <el-option label="前复权" value="qfq" />
+          <el-option label="后复权" value="hfq" />
+        </el-select>
+        <el-date-picker v-model="klineForm.start" type="date" value-format="YYYY-MM-DD" placeholder="起始日期" style="width:140px;" @change="loadKline(1)" />
+        <el-date-picker v-model="klineForm.end" type="date" value-format="YYYY-MM-DD" placeholder="结束日期" style="width:140px;" @change="loadKline(1)" />
+        <el-button type="primary" @click="loadKline(1)"><el-icon><Search /></el-icon>查询</el-button>
+        <el-button @click="exportKlineCsv" :disabled="!klineList.length">
+          <el-icon><Download /></el-icon>导出 CSV
+        </el-button>
+        <span class="grow"></span>
+        <el-tag size="small">{{ klineTotal }} 条</el-tag>
+      </div>
+
+      <div class="kline-chart-wrapper" v-loading="klineLoading">
+        <div ref="klineChartRef" class="kline-chart">
+          <div v-if="!klineLoading && !klineList.length" class="kline-empty">
+            <el-icon size="32" color="#c0c4cc"><DocumentRemove /></el-icon>
+            <p>暂无 K 线数据</p>
+            <p class="kline-empty-tip">
+              可能原因:1) 该股票尚未拉取 K线;
+              2) 拉取任务失败或未完成。<br/>
+              请到「任务管理」执行增量同步或拉取数据。
+            </p>
+            <el-button type="primary" plain size="small" @click="triggerFetchOne">
+              <el-icon><Download /></el-icon>立即拉取此股 K线
+            </el-button>
+          </div>
+        </div>
+      </div>
+
+      <el-table :data="klineList" stripe height="320" style="margin-top:8px;">
+        <el-table-column prop="trade_date" label="日期" width="110" fixed sortable />
+        <el-table-column prop="open" label="开盘" align="right" :formatter="kFmt2" />
+        <el-table-column prop="high" label="最高" align="right" :formatter="kFmt2" />
+        <el-table-column prop="low" label="最低" align="right" :formatter="kFmt2" />
+        <el-table-column prop="close" label="收盘" align="right" :formatter="kFmt2" />
+        <el-table-column prop="pre_close" label="昨收" align="right" :formatter="kFmt2" />
+        <el-table-column prop="change_amount" label="涨跌额" align="right">
+          <template #default="{ row }">
+            <span :class="(row.change_amount || 0) >= 0 ? 'up' : 'down'">
+              {{ kFmt2(null, null, row.change_amount) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="涨跌幅" align="right" sortable :sort-method="(a, b) => Number(a.pct_change || 0) - Number(b.pct_change || 0)">
+          <template #default="{ row }">
+            <span :class="Number(row.pct_change || 0) >= 0 ? 'up' : 'down'">
+              {{ Number(row.pct_change || 0).toFixed(2) }}%
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="volume" label="成交量(手)" align="right" :formatter="kFmtInt" sortable />
+        <el-table-column prop="amount" label="成交额(元)" align="right" :formatter="kFmtAmt" sortable />
+        <el-table-column prop="turnover_rate" label="换手率%" align="right" :formatter="kFmt2" sortable />
+      </el-table>
+      <div style="margin-top:8px; text-align:right;">
+        <el-pagination
+          v-model:current-page="klineForm.page"
+          v-model:page-size="klineForm.limit"
+          :total="klineTotal"
+          :page-sizes="[100, 200, 500, 1000]"
+          layout="total, sizes, prev, pager, next, jumper"
+          @current-change="loadKline()"
+          @size-change="loadKline(1)"
+        />
+      </div>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { stocksApi, tasksApi } from '@/api/modules'
+import * as echarts from 'echarts'
+import { stocksApi, tasksApi, klineApi } from '@/api/modules'
 
 const router = useRouter()
 const loading = ref(false)
@@ -232,16 +283,33 @@ const detail = ref(null)
 const selected = ref([])
 
 // 任务执行状态
-const updating = reactive({ stock_list: false, stock_enrich: false })
-const batch = reactive({ kline: false, enrich: false })
-const enrichVisible = ref(false)
-const enrichForm = reactive({ limit: 50, workers: 4 })
+const batch = reactive({ kline: false })
 
 const filter = reactive({
   keyword: '', market: '', industry: '', is_active: 1,
   min_integrity: null,
   page: 1, page_size: 20,
 })
+
+// K线查看对话框状态
+const klineVisible = ref(false)
+const klineForm = reactive({
+  code: '',
+  name: '',
+  adjust: 'qfq',
+  start: '',
+  end: '',
+  page: 1,
+  limit: 200,
+})
+const klineList = ref([])
+const klineTotal = ref(0)
+const klineLoading = ref(false)
+const klineChartRef = ref(null)
+let klineChart = null
+const klineTitle = computed(() => klineForm.code
+  ? `${klineForm.code}${klineForm.name ? ' ' + klineForm.name : ''} · K线`
+  : 'K线')
 
 async function load(page) {
   if (page) filter.page = page
@@ -291,9 +359,225 @@ async function openDetail(row) {
   }
 }
 
-function goKline(code) {
+function goKline(code, name) {
   detailVisible.value = false
-  router.push({ path: '/kline', query: { code } })
+  // 重置表单(避免上次打开的残留导致 race condition)
+  klineForm.code = code
+  klineForm.name = name || ''
+  klineForm.adjust = 'qfq'
+  klineForm.start = ''
+  klineForm.end = ''
+  klineForm.page = 1
+  klineForm.limit = 200
+  klineList.value = []
+  klineTotal.value = 0
+  klineLoading.value = false
+  // 先 dispose 上一次的 chart 实例(避免内存泄漏 / 复用旧 DOM)
+  if (klineChart) {
+    try { klineChart.dispose() } catch {}
+    klineChart = null
+  }
+  klineVisible.value = true
+}
+
+// 在 K线 dialog 里直接触发单股拉取(走新的 sync_latest 入口)
+let _refreshTimer = null
+async function triggerFetchOne() {
+  if (!klineForm.code) return
+  try {
+    await tasksApi.trigger({
+      task: 'sync_latest',
+      params: {
+        days_back: 365,
+        adjust: klineForm.adjust,
+        workers: 2,
+        codes: [klineForm.code],
+      },
+    })
+    ElMessage.success(`已提交 ${klineForm.code} 的 K线拉取任务`)
+    // 60 秒后自动刷新一次(清理上一次的 timer,避免叠加)
+    if (_refreshTimer) clearTimeout(_refreshTimer)
+    _refreshTimer = setTimeout(() => {
+      _refreshTimer = null
+      if (klineVisible.value) loadKline()
+    }, 60000)
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
+}
+
+async function loadKline(page) {
+  if (!klineForm.code) return
+  if (page) klineForm.page = page
+  klineLoading.value = true
+  try {
+    const data = await klineApi.query({
+      code: klineForm.code,
+      adjust: klineForm.adjust,
+      start: klineForm.start,
+      end: klineForm.end,
+      limit: klineForm.limit,
+      offset: (klineForm.page - 1) * klineForm.limit,
+    })
+    klineList.value = data.items
+    klineTotal.value = data.total
+  } catch (e) {
+    ElMessage.error(e.message)
+    klineList.value = []
+    klineTotal.value = 0
+  } finally {
+    klineLoading.value = false
+    // 不论成功失败,都尝试渲染 chart(空数据也会 clear)
+    await nextTick()
+    renderKlineChart()
+  }
+}
+
+/** dialog 完全打开后触发 - 等待动画完成再初始化 chart */
+function onKlineOpened() {
+  // 给 dialog 打开动画 100ms 缓冲,防止容器尺寸为 0 时 init
+  setTimeout(() => {
+    if (!klineChart && klineChartRef.value) {
+      try {
+        klineChart = echarts.init(klineChartRef.value)
+        klineChart.resize()
+      } catch (e) {
+        console.error('[Kline] echarts init failed:', e)
+      }
+    }
+    loadKline(1)
+  }, 100)
+}
+
+let _rendering = false
+
+function renderKlineChart() {
+  if (!klineChart) return
+  // 防抖:上一次 setOption 还未完成,跳过本次调用
+  if (_rendering) return
+  // 防御:容器未挂载或尺寸为 0,跳过渲染避免 ECharts 死循环
+  const el = klineChartRef.value
+  if (!el || el.clientWidth === 0 || el.clientHeight === 0) {
+    return
+  }
+  if (!klineList.value.length) {
+    klineChart.clear()
+    return
+  }
+  _rendering = true
+  try {
+    // 防御:任何字段为 null/undefined 都会让 echarts 抛错,做归一化
+  // 防御:任何字段为 null/undefined 都会让 echarts 抛错,做归一化
+  const safe = (v, d = null) => (v == null || (typeof v === 'number' && isNaN(v)) ? d : v)
+  const dates = klineList.value.map((r) => r.trade_date).filter(Boolean)
+  if (!dates.length) {
+    klineChart.clear()
+    return
+  }
+  const ohlc = klineList.value.map((r) => [
+    safe(r.open), safe(r.close), safe(r.low), safe(r.high),
+  ])
+  const volumes = klineList.value.map((r) => ({
+    value: safe(r.volume, 0),
+    itemStyle: { color: (r.close ?? 0) >= (r.open ?? 0) ? '#ef232a' : '#14b066' },
+  }))
+  const closes = klineList.value.map((r) => Number(safe(r.close, 0)))
+  const calcMA = (n) =>
+    closes.map((_, i) => {
+      if (i < n - 1) return '-'
+      let s = 0
+      for (let k = i - n + 1; k <= i; k++) s += closes[k]
+      return +(s / n).toFixed(2)
+    })
+  const ma5 = calcMA(5), ma10 = calcMA(10), ma20 = calcMA(20)
+  klineChart.setOption({
+    title: { text: `${klineForm.code} ${klineForm.adjust === 'qfq' ? '前复权' : '后复权'}`, left: 'center' },
+    legend: { data: ['K线', 'MA5', 'MA10', 'MA20', '成交量'], top: 30 },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross', link: [{ xAxisIndex: 'all' }] } },
+    grid: [
+      { left: 60, right: 30, top: 70, height: '60%' },
+      { left: 60, right: 30, top: '78%', height: '16%' },
+    ],
+    xAxis: [
+      { type: 'category', data: dates, scale: true, boundaryGap: false,
+        axisLine: { onZero: false }, splitLine: { show: false }, axisLabel: { show: false } },
+      { type: 'category', data: dates, gridIndex: 1, axisLabel: { show: false } },
+    ],
+    yAxis: [
+      { scale: true, splitArea: { show: true } },
+      { scale: true, gridIndex: 1, splitNumber: 2,
+        axisLabel: { show: false }, axisLine: { show: false }, splitLine: { show: false } },
+    ],
+    dataZoom: [
+      { type: 'inside', xAxisIndex: [0, 1], start: 50, end: 100 },
+      { show: true, xAxisIndex: [0, 1], type: 'slider', bottom: 10, start: 50, end: 100 },
+    ],
+    series: [
+      { name: 'K线', type: 'candlestick', data: ohlc,
+        itemStyle: { color: '#ef232a', color0: '#14b066', borderColor: '#ef232a', borderColor0: '#14b066' } },
+      { name: 'MA5',  type: 'line', data: ma5,  smooth: true, lineStyle: { width: 1, color: '#ff9800' }, showSymbol: false },
+      { name: 'MA10', type: 'line', data: ma10, smooth: true, lineStyle: { width: 1, color: '#2196f3' }, showSymbol: false },
+      { name: 'MA20', type: 'line', data: ma20, smooth: true, lineStyle: { width: 1, color: '#9c27b0' }, showSymbol: false },
+      { name: '成交量', type: 'bar', data: volumes, xAxisIndex: 1, yAxisIndex: 1 },
+    ],
+    })
+    // 渲染后立即 resize 一次,确保容器尺寸正确
+    try { klineChart.resize() } catch {}
+  } finally {
+    _rendering = false
+  }
+}
+
+function kFmt2(_r, _c, v) {
+  if (v == null) return '-'
+  return Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function kFmtInt(_r, _c, v) {
+  if (v == null) return '-'
+  return Math.round(Number(v)).toLocaleString('zh-CN')
+}
+function kFmtAmt(_r, _c, v) {
+  if (v == null) return '-'
+  const n = Number(v)
+  if (n >= 1e8) return (n / 1e8).toFixed(2) + ' 亿'
+  if (n >= 1e4) return (n / 1e4).toFixed(2) + ' 万'
+  return n.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+}
+
+/** 把 YYYYMMDD / YYYY-MM-DD 统一格式化成 YYYY-MM-DD */
+function formatDate(s) {
+  if (!s) return ''
+  const str = String(s).trim()
+  if (/^\d{8}$/.test(str)) return `${str.slice(0, 4)}-${str.slice(4, 6)}-${str.slice(6, 8)}`
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str
+  return str
+}
+
+function exportKlineCsv() {
+  if (!klineList.value.length) return
+  const headers = ['日期', '开盘', '最高', '最低', '收盘', '昨收', '涨跌额', '涨跌幅%', '成交量(手)', '成交额(元)', '换手率%']
+  const rows = klineList.value.map((r) => [
+    r.trade_date, r.open, r.high, r.low, r.close, r.pre_close,
+    r.change_amount, r.pct_change, r.volume, r.amount, r.turnover_rate,
+  ])
+  const csv = [headers, ...rows].map((cols) => cols.join(',')).join('\n')
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${klineForm.code}_${klineForm.adjust}_${klineForm.start || 'all'}_${klineForm.end || 'now'}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+  ElMessage.success('已导出 CSV')
+}
+
+function onKlineClosed() {
+  if (klineChart) {
+    klineChart.dispose()
+    klineChart = null
+  }
+  klineList.value = []
+  klineTotal.value = 0
 }
 
 function goBacktest(code) {
@@ -323,56 +607,10 @@ function exportCsv() {
 }
 
 // ============== 操作 ==============
-async function quickUpdate(task) {
-  try {
-    await ElMessageBox.confirm(
-      '从主数据源重新拉取全市场股票列表并 UPSERT 到 stock_list。',
-      '刷新基础信息', { type: 'info' },
-    )
-  } catch { return }
-  updating[task] = true
-  try {
-    const r = await tasksApi.trigger({ task, params: {} })
-    ElMessage.success(`已提交 [${task}],ID: ${r.task_id || '-'}`)
-  } catch (e) {
-    ElMessage.error(e.message)
-  } finally {
-    updating[task] = false
-  }
-}
-
-function openEnrichDialog() {
-  enrichForm.limit = 50
-  enrichForm.workers = 4
-  enrichVisible.value = true
-}
-
-async function confirmEnrich() {
-  try {
-    await ElMessageBox.confirm(
-      `将处理 ${enrichForm.limit || '全部'} 只股,Phase 2 并发 ${enrichForm.workers}。提交后不可中断。`,
-      '确认增强', { type: 'warning' },
-    )
-  } catch { return }
-  updating.stock_enrich = true
-  try {
-    const r = await tasksApi.trigger({
-      task: 'stock_enrich',
-      params: { limit: enrichForm.limit, workers: enrichForm.workers },
-    })
-    enrichVisible.value = false
-    ElMessage.success(`已提交 [stock_enrich],ID: ${r.task_id || '-'}`)
-  } catch (e) {
-    ElMessage.error(e.message)
-  } finally {
-    updating.stock_enrich = false
-  }
-}
-
 // 单股操作
 async function rowAction(cmd, row) {
   if (cmd === 'detail') { openDetail(row); return }
-  if (cmd === 'view-kline') { goKline(row.code); return }
+  if (cmd === 'view-kline') { goKline(row.code, row.name); return }
   // 补全 K线(单股)
   try {
     await ElMessageBox.confirm(
@@ -383,10 +621,10 @@ async function rowAction(cmd, row) {
   batch.kline = true
   try {
     await tasksApi.trigger({
-      task: 'kline_daily',
+      task: 'sync_latest',
       params: {
-        mode: 'smart', adjust: 'qfq', days_back: 365,
-        workers: 4, codes: [row.code],
+        days_back: 365, adjust: 'qfq',
+        workers: 2, codes: [row.code],
       },
     })
     ElMessage.success(`已提交 [${row.code}] K线更新任务`)
@@ -410,10 +648,10 @@ async function batchUpdateKline() {
   batch.kline = true
   try {
     await tasksApi.trigger({
-      task: 'kline_daily',
+      task: 'sync_latest',
       params: {
-        mode: 'smart', adjust: 'qfq', days_back: 365,
-        workers: 6, codes,
+        days_back: 365, adjust: 'qfq',
+        workers: 4, codes,
       },
     })
     ElMessage.success(`已提交批量 K线更新 (${codes.length} 只)`)
@@ -424,35 +662,71 @@ async function batchUpdateKline() {
   }
 }
 
-async function batchEnrich() {
-  const codes = selected.value.map(r => r.code)
-  try {
-    await ElMessageBox.confirm(
-      `将批量增强选中 ${codes.length} 只股的 profile 信息,继续?`,
-      '批量增强', { type: 'warning' },
-    )
-  } catch { return }
-  batch.enrich = true
-  try {
-    // 注意: stock_enrich 没有 codes 参数,这里用 limit 限制数量
-    // 后端用 stock_list 中的 last_enriched_at 判定,这里传 limit 作近似
-    await tasksApi.trigger({
-      task: 'stock_enrich',
-      params: { limit: codes.length, workers: 4 },
-    })
-    ElMessage.success(`已提交批量增强 (${codes.length} 只,按 last_enriched_at 排序)`)
-  } catch (e) {
-    ElMessage.error(e.message)
-  } finally {
-    batch.enrich = false
-  }
-}
-
 onMounted(() => {
   load(1)
   loadIndustries()
+  window.addEventListener('resize', klineResize)
 })
 
 // 完整度筛选变化时立即重查
 watch(() => filter.min_integrity, () => load(1))
+
+function klineResize() {
+  // chart 已 dispose 时直接跳过,避免报错
+  if (klineChart && klineChart.getDom && klineChart.getDom().isConnected) {
+    try { klineChart.resize() } catch {}
+  }
+}
+
+onUnmounted(() => {
+  window.removeEventListener('resize', klineResize)
+  if (_refreshTimer) {
+    clearTimeout(_refreshTimer)
+    _refreshTimer = null
+  }
+  if (klineChart) {
+    try { klineChart.dispose() } catch {}
+    klineChart = null
+  }
+})
 </script>
+
+<style scoped>
+.kline-chart-wrapper {
+  width: 100%;
+  height: 360px;
+  position: relative;
+}
+.kline-chart {
+  width: 100%;
+  height: 100%;
+}
+.kline-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #909399;
+}
+.kline-empty p { margin: 0; font-size: 14px; }
+.kline-empty-tip { font-size: 12px; color: #c0c4cc; text-align: center; line-height: 1.6; }
+
+/* 数据完整度标签 */
+.integrity-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.integrity-tags .el-tag {
+  margin: 0;
+}
+.integrity-score {
+  margin-left: 6px;
+  color: #909399;
+  font-size: 12px;
+  white-space: nowrap;
+}
+</style>

@@ -224,3 +224,17 @@ CREATE INDEX IF NOT EXISTS idx_action_log_actor ON admin_action_log(actor, creat
 CREATE INDEX IF NOT EXISTS idx_action_log_target ON admin_action_log(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_action_log_action ON admin_action_log(action);
 CREATE INDEX IF NOT EXISTS idx_action_log_created ON admin_action_log(created_at DESC);
+
+-- 训练 token 记录表(user.db)
+-- 每个 token 落库一行,提供吊销能力。训练 token 这里是个简表(不像
+-- admin_user 那样有 refresh_token 策略);老库迁移时无需从 stock.db
+-- 搬运——线上 token 一次性失效,训练用户重新登录即可。
+CREATE TABLE IF NOT EXISTS train_token (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    token       TEXT UNIQUE NOT NULL,
+    expires_at  TEXT NOT NULL,
+    created_at  TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_train_token_user ON train_token(user_id);
+CREATE INDEX IF NOT EXISTS idx_train_token_token ON train_token(token);

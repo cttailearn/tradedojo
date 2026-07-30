@@ -2,13 +2,14 @@
 AKShare 数据获取封装
 - 自动重试 + 指数退避(带抖动)
 - 统一字段命名
-- 请求间隔限流
+- 请求间隔限流(进程级全局,多 worker 共享)
 
 继承 BaseFetcher 以纳入多数据源架构
 """
 import random
 import time
 import logging
+import threading
 from typing import Optional
 
 import pandas as pd
@@ -42,6 +43,68 @@ def _is_transient_error(exc: Exception) -> bool:
     return any(kw in msg for kw in _TRANSIENT_KEYWORDS)
 
 
+# ============================================================
+# 进程级全局速率限制器
+# 多个 AKShareFetcher 实例共享同一个时间戳 + 锁,
+# 即便并行 updater 起 4 个 worker,全局节奏也强制 ≥ REQUEST_INTERVAL。
+# ============================================================
+class _GlobalRateLimiter:
+    """进程内全局速率限制器(线程安全)。"""
+    _lock = threading.Lock()
+    _last_request_at = 0.0
+
+    @classmethod
+    def wait(cls, min_interval: float):
+        if min_interval <= 0:
+            return
+        with cls._lock:
+            now = time.time()
+            elapsed = now - cls._last_request_at
+            if elapsed < min_interval:
+                time.sleep(min_interval - elapsed)
+            cls._last_request_at = time.time()
+
+
+# ============================================================
+# AKShare 默认 UA 伪装(避免被识别为脚本)
+# ============================================================
+def _patch_akshare_headers():
+    """给 akshare 内部 requests.Session 注入浏览器 UA。"""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Connection": "keep-alive",
+    }
+    try:
+        # akshare 新版本把 session 暴露在 akshare 模块
+        for attr in ("_session", "session", "sess"):
+            sess = getattr(ak, attr, None)
+            if sess is not None and hasattr(sess, "headers"):
+                sess.headers.update(headers)
+                logger.debug(f"[Fetcher] 已设置 akshare.{attr} UA")
+                return True
+        # 备用:遍历模块子模块,找含 session 的
+        import akshare as _ak
+        for mod_name in dir(_ak):
+            obj = getattr(_ak, mod_name, None)
+            sess = getattr(obj, "session", None) if obj else None
+            if sess and hasattr(sess, "headers"):
+                sess.headers.update(headers)
+        return True
+    except Exception as e:
+        logger.debug(f"[Fetcher] 设置 UA 失败(非致命): {e}")
+        return False
+
+
+# 模块加载时执行一次
+_patch_akshare_headers()
+
+
 def _normalize_market(code: str) -> str:
     """根据代码判断市场前缀"""
     if code.startswith(("60", "68", "90", "11", "13")):
@@ -66,8 +129,6 @@ class AKShareFetcher(BaseFetcher):
             if request_interval is not None
             else FetchConfig.REQUEST_INTERVAL
         )
-        # 上次请求时间戳(用于 REQUEST_INTERVAL)
-        self._last_request_at: float = 0.0
 
     @property
     def source_name(self) -> str:
@@ -86,14 +147,8 @@ class AKShareFetcher(BaseFetcher):
 
     # ---------- 内部工具 ----------
     def _throttle(self):
-        """请求间隔限流:确保两次请求至少间隔 REQUEST_INTERVAL 秒"""
-        if self.request_interval <= 0:
-            return
-        now = time.time()
-        elapsed = now - self._last_request_at
-        if elapsed < self.request_interval:
-            time.sleep(self.request_interval - elapsed)
-        self._last_request_at = time.time()
+        """请求间隔限流:走进程级全局限流器,多实例/多 worker 共享节奏。"""
+        _GlobalRateLimiter.wait(self.request_interval)
 
     def _retry(self, func, *args, **kwargs):
         """
@@ -104,14 +159,11 @@ class AKShareFetcher(BaseFetcher):
         """
         last_exc = None
         for i in range(self.max_retry):
-            # 重试前先节流(避免雷鸣群 + 减轻服务端压力)
+            # 重试前先节流(全局限流器会自动记录时间戳)
             if i > 0:
                 self._throttle()
             try:
                 result = func(*args, **kwargs)
-                # 首次成功也要打点,确保 _last_request_at 被设置
-                if i == 0:
-                    self._last_request_at = time.time()
                 return result
             except Exception as e:
                 last_exc = e

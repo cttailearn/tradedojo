@@ -50,7 +50,6 @@ const routes = [
     children: [
       { path: 'dashboard', name: 'Dashboard', component: () => import('@/views/Dashboard.vue'), meta: { title: '仪表盘', app: 'admin' } },
       { path: 'stocks',    name: 'Stocks',    component: () => import('@/views/Stocks.vue'),    meta: { title: '股票管理', app: 'admin' } },
-      { path: 'kline',     name: 'Kline',     component: () => import('@/views/Kline.vue'),     meta: { title: 'K线查询', app: 'admin' } },
       { path: 'tasks',     name: 'Tasks',     component: () => import('@/views/Tasks.vue'),     meta: { title: '数据更新', app: 'admin' } },
       { path: 'scheduler', name: 'Scheduler', component: () => import('@/views/Scheduler.vue'), meta: { title: '定时调度', app: 'admin' } },
       { path: 'backtest',  name: 'Backtest',  component: () => import('@/views/Backtest.vue'),  meta: { title: '回测中心', app: 'admin' } },

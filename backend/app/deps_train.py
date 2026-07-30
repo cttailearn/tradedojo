@@ -11,7 +11,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 
 from app.config import settings
-from db.database import query_one
+from db.database import user_query_one
 
 
 oauth2_scheme_train = OAuth2PasswordBearer(tokenUrl="/api/train/login", auto_error=False)
@@ -50,14 +50,14 @@ def get_current_train_user(token: str = Depends(oauth2_scheme_train)) -> dict:
             raise cred_exc
         # 兼容两种 sub 格式:数字字符串(新) / 用户名(旧)
         if str(sub).isdigit():
-            row = query_one(
+            row = user_query_one(
                 "SELECT id, username, display_name, last_login, is_active "
                 "FROM training_user WHERE id = ?",
                 (int(sub),),
             )
         else:
             username = str(sub)
-            row = query_one(
+            row = user_query_one(
                 "SELECT id, username, display_name, last_login, is_active "
                 "FROM training_user WHERE username = ?",
                 (username,),

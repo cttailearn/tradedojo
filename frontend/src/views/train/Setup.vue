@@ -3,44 +3,30 @@
     <div class="page-card">
       <h3 class="page-title">发起一次 K 线交易训练</h3>
       <p class="muted">
-        设置下面的参数,系统会从已有 A 股中随机挑一只符合条件的历史股票,
-        并把 <b>你设定的 "训练开始日" 之前的 {{ form.lookback_months }} 个月数据</b>全部展示出来供你分析,
+        设置下面的参数,系统会从已有 A 股中<b>随机挑一只</b>符合条件的历史股票,
+        并把<b>训练开始日</b>之前的 {{ form.lookback_months }} 个月数据全部展示出来供你分析,
         此后只能逐日推进,体验真实交易。
       </p>
 
       <el-form :model="form" label-width="160px" label-position="right" v-loading="loadingOptions">
         <el-divider content-position="left">时间窗</el-divider>
         <el-row :gutter="16">
-          <el-col :span="8">
-            <el-form-item label="训练开始日">
-              <el-date-picker v-model="form.start_date" type="date"
-                              value-format="YYYY-MM-DD" style="width: 100%"
-                              placeholder="选择历史中的一天" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="数据结束日">
-              <el-date-picker v-model="form.end_date" type="date"
-                              value-format="YYYY-MM-DD" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="时间窗">
-              <el-radio-group v-model="rangePreset" size="default" @change="applyRangePreset">
-                <el-radio-button value="1y">1 年内</el-radio-button>
-                <el-radio-button value="3y">3 年内</el-radio-button>
-                <el-radio-button value="5y">5 年内</el-radio-button>
+          <el-col :span="12">
+            <el-form-item label="时间窗长度">
+              <el-radio-group v-model="form.range_years" size="default">
+                <el-radio-button :value="1">1 年内</el-radio-button>
+                <el-radio-button :value="3">3 年内</el-radio-button>
+                <el-radio-button :value="5">5 年内</el-radio-button>
               </el-radio-group>
-              <div class="hint" style="margin-top:6px;">点击自动设置训练开始/结束日,默认 1 年内</div>
+              <div class="hint" style="margin-top:6px;">
+                系统将在此时间窗内<b>随机</b>挑一天作为训练开始日(提交时确定),结束日固定为今天
+              </div>
             </el-form-item>
           </el-col>
-        </el-row>
-
-        <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item label="提供历史回看月数">
               <el-input-number v-model="form.lookback_months" :min="1" :max="36" />
-              <span class="hint">展示训练开始日之前 N 个月的数据(默认 1)</span>
+              <span class="hint">展示训练开始日之前 N 个月的数据(默认 6)</span>
             </el-form-item>
           </el-col>
         </el-row>
@@ -151,12 +137,21 @@
         <el-row :gutter="16">
           <el-col :span="24">
             <el-alert type="info" :closable="false" show-icon>
-              本次训练消耗训练资金 <b>¥ {{ sessionCost.toFixed(2) }}</b> 元 (5 ~ 80 元封顶)。
-              <span v-if="wallet.balance < sessionCost" style="color: #f56c6c;">
-                余额不足 (当前余额 ¥ {{ money(wallet.balance) }}),
-                <el-link type="warning" @click="$router.push('/train/wallet')">去充值</el-link>
-              </span>
-              <span v-else style="margin-left: 8px;">扣费后余额 ¥ {{ money(wallet.balance - sessionCost) }}</span>
+              <div style="line-height:1.8;">
+                <div>
+                  <b>本次训练固定扣 ¥ {{ sessionCost.toFixed(2) }}</b> 元
+                  <span style="color:#909399;font-size:12px;margin-left:8px;">
+                    (统一价,与时间窗、初始资金无关)
+                  </span>
+                </div>
+                <div v-if="wallet.balance < sessionCost" style="color: #f56c6c;">
+                  余额不足 (当前余额 ¥ {{ money(wallet.balance) }}),
+                  <el-link type="warning" @click="$router.push('/train/wallet')">去充值</el-link>
+                </div>
+                <div v-else style="color:#67c23a;">
+                  扣费后余额 ¥ {{ money(wallet.balance - sessionCost) }}
+                </div>
+              </div>
             </el-alert>
           </el-col>
         </el-row>
@@ -175,7 +170,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { trainApi, stocksApi } from '@/api/modules'
@@ -185,7 +180,6 @@ const router = useRouter()
 const loadingOptions = ref(false)
 const starting = ref(false)
 const wallet = ref({ balance: 0 })
-const rangePreset = ref('1y')
 const options = reactive({ industries: [] })
 
 // 用本地时区格式化,避免 toISOString UTC 跨天
@@ -196,20 +190,35 @@ function fmtLocal(d) {
   return `${y}-${m}-${day}`
 }
 
-// 默认日期:用数据库中"最近一个有 K 线的交易日",降级到本地今天
-const DEFAULT_DATES = (() => {
-  const today = new Date()
-  const oneYearAgo = new Date(today)
-  oneYearAgo.setFullYear(today.getFullYear() - 1)
-  return {
-    start: fmtLocal(oneYearAgo),
-    end: fmtLocal(today),
-  }
-})()
+// 在 [start, end] 区间内随机选一天(包含两端)
+function randomDateBetween(startStr, endStr) {
+  const sd = new Date(startStr).getTime()
+  const ed = new Date(endStr).getTime()
+  if (!isFinite(sd) || !isFinite(ed) || ed <= sd) return startStr
+  const r = sd + Math.floor(Math.random() * (ed - sd + 86400000))
+  const d = new Date(Math.min(r, ed))
+  return fmtLocal(d)
+}
+
+// 在 [end - years, end] 区间内随机生成 start_date
+function rollRandomStart(years, endStr) {
+  const end = new Date(endStr)
+  const earliest = new Date(end)
+  earliest.setFullYear(end.getFullYear() - years)
+  // 起点:最早可训练开始日 = end - years;终点:end 本身(包含今天)
+  return randomDateBetween(fmtLocal(earliest), endStr)
+}
+
+// 固定 end_date = 今天(每次刷新页面更新一次)
+function todayLocal() {
+  return fmtLocal(new Date())
+}
 
 const form = reactive({
-  start_date: DEFAULT_DATES.start,
-  end_date: DEFAULT_DATES.end,
+  // 时间窗控制:由用户选择窗口长度,start_date 提交时再随机
+  range_years: 1,
+  start_date: '',   // 提交时随机生成(写入 session)
+  end_date: todayLocal(),
   // 与后端 TrainingSetupRequest 默认值保持一致:6 (后端 Field(6, ...))
   lookback_months: 6,
   initial_cash: 1_000_000,
@@ -229,12 +238,19 @@ const form = reactive({
   keyword: '',
 })
 
-// 训练费 = 与后端共享的 calcSessionCost 公式 (utils/trainFee.js)
-const sessionCost = computed(() => calcSessionCost(form.start_date, form.end_date, form.initial_cash))
+// 当前随机 start_date(不再展示给用户,提交时直接用 + 刷新)
+const previewStartDate = ref(rollRandomStart(form.range_years, form.end_date))
+
+// 监听 range_years 变化 → 立即重新随机,提交时也会再随机一次
+watch(() => form.range_years, () => {
+  previewStartDate.value = rollRandomStart(form.range_years, form.end_date)
+})
+
+// 训练费:固定 ¥100(utils/trainFee.js 与后端共享)
+const sessionCost = computed(() => calcSessionCost())
 
 const formValid = computed(() => {
-  if (!form.start_date || !form.end_date) return false
-  if (form.start_date >= form.end_date) return false
+  if (!form.range_years || form.range_years < 1) return false
   if (form.initial_cash < 10_000) return false
   return true
 })
@@ -259,21 +275,10 @@ async function loadOptions() {
   }
 }
 
-function applyRangePreset(v) {
-  if (!v) return
-  const years = { '1y': 1, '3y': 3, '5y': 5 }[v] || 1
-  const end = new Date()
-  const start = new Date(end)
-  start.setFullYear(end.getFullYear() - years)
-  form.start_date = fmtLocal(start)
-  form.end_date = fmtLocal(end)
-}
-
 function reset() {
-  rangePreset.value = '1y'
   Object.assign(form, {
-    start_date: DEFAULT_DATES.start,
-    end_date: DEFAULT_DATES.end,
+    range_years: 1,
+    end_date: todayLocal(),
     lookback_months: 6,
     initial_cash: 1_000_000,
     per_trade_amount: 100_000,
@@ -291,15 +296,24 @@ function reset() {
     market: null,
     keyword: '',
   })
+  previewStartDate.value = rollRandomStart(form.range_years, form.end_date)
 }
 
 async function start() {
   if (!formValid.value) {
-    return ElMessage.warning('日期/资金无效,请检查参数')
+    return ElMessage.warning('参数无效,请检查')
   }
+  // 提交时再次随机 start_date,并把随机结果回填到 preview(用户能看到最终选了哪天)
+  const finalStart = rollRandomStart(form.range_years, form.end_date)
+  previewStartDate.value = finalStart
+
   starting.value = true
   try {
-    const payload = { ...form }
+    const payload = {
+      ...form,
+      start_date: finalStart,
+      end_date: form.end_date,
+    }
     const res = await trainApi.startSession(payload)
     ElMessage.success(`已随机选中 ${res.name} (${res.code}),开始训练!`)
     router.push(`/train/trade/${res.id}`)

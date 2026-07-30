@@ -3,26 +3,15 @@
 不依赖 admin 鉴权,只用训练端 JWT 即可.
 训练叠加图需要的指数对照,例如上证综指/沪深300/创业板指/深证成指.
 """
-from typing import Optional, List
+from typing import Optional
 from fastapi import APIRouter, Depends, Query
 
 from app.deps_train import get_current_train_user
 from db.database import query_all
+from updater.indices import KEY_INDICES
 
 
 router = APIRouter(prefix="/api/train/indices", tags=["训练端-指数"])
-
-
-# 主流指数默认列表(供前端下拉框使用)
-DEFAULT_INDICES: List[dict] = [
-    {"code": "sh000001", "name": "上证综指",      "market": "SH"},
-    {"code": "sz399001", "name": "深证成指",      "market": "SZ"},
-    {"code": "sh000300", "name": "沪深300",      "market": "SH"},
-    {"code": "sh000905", "name": "中证500",      "market": "SH"},
-    {"code": "sz399006", "name": "创业板指",      "market": "SZ"},
-    {"code": "sh000688", "name": "科创50",       "market": "SH"},
-    {"code": "sh000016", "name": "上证50",       "market": "SH"},
-]
 
 
 @router.get("")
@@ -30,7 +19,7 @@ def list_indices(
     user: dict = Depends(get_current_train_user),
 ):
     """支持前端下拉框用的指数清单(代码 + 名称)"""
-    return {"items": DEFAULT_INDICES}
+    return {"items": KEY_INDICES}
 
 
 @router.get("/kline")

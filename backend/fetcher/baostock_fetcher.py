@@ -74,6 +74,8 @@ _ADJUST_FLAG = {
 _INDEX_CODE_MAP = {
     "sh000001": "sh.000001",
     "sh000300": "sh.000300",
+    "sh000905": "sh.000905",
+    "sh000688": "sh.000688",
     "sh000016": "sh.000016",
     "sz399001": "sz.399001",
     "sz399006": "sz.399006",
@@ -195,19 +197,26 @@ class BaostockFetcher(BaseFetcher):
             code, name, ipo_date, out_date, stock_type, status = row[:6]
             if status != "1":  # 1=在市
                 continue
-            if stock_type not in ("1", "2"):  # 1=股票, 2=指数
+            # 只保留个股(stock_type=1),过滤指数/债券/基金(stock_type=2/3/4)
+            if stock_type != "1":
                 continue
             # code 格式: sh.600000 -> 取数字部分
             code_num = code.split(".")[-1]
             market = code.split(".")[0]
+            # list_date baostock 返回 YYYY-MM-DD, 改为 YYYYMMDD 与 AKShare 对齐
+            ld = ""
+            if ipo_date and "-" in ipo_date:
+                ld = ipo_date.replace("-", "")
+            elif ipo_date and len(ipo_date) == 8:
+                ld = ipo_date
             rows.append({
                 "code": code_num,
                 "name": name,
                 "market": market,
                 "full_code": code,
                 "is_active": 1,
-                "industry": "",  # 留空,enrich 阶段填充
-                "list_date": ipo_date.replace("-", "") if ipo_date else "",
+                "industry": "",  # baostock 不返回行业,留空待 enrich
+                "list_date": ld,
             })
         df = pd.DataFrame(rows)
         logger.info(f"[Baostock] 获取股票列表 {len(df)} 只")
@@ -321,7 +330,7 @@ class BaostockFetcher(BaseFetcher):
 
     # ---------- 4. 个股信息(含行业/上市日期) ----------
     def get_stock_profile(self, code: str) -> Optional[dict]:
-        """从 stock_basic 直接拿,免去单股 API 调用"""
+        """从 stock_basic + stock_industry 合并拿行业和上市日期"""
         if not self._ensure_login():
             return None
         # code 转 baostock 格式
@@ -334,15 +343,29 @@ class BaostockFetcher(BaseFetcher):
                 bs_code = f"bj.{code}"
         else:
             bs_code = code
+
+        # 1) 基础信息
         rs = self._run_query(lambda: bs.query_stock_basic(code=bs_code))
         if rs is None or rs.error_code != "0":
             return None
-        if rs.next():
-            r = rs.get_row_data()
-            code_full, name, ipo_date, out_date, stock_type, status = r[:6]
-            return {
-                "industry": "",  # baostock 不直接给行业
-                "list_date": ipo_date,
-                "company_name": name,
-            }
-        return None
+        if not rs.next():
+            return None
+        r = rs.get_row_data()
+        code_full, name, ipo_date, out_date, stock_type, status = r[:6]
+
+        # 2) 行业(证监会分类,baostock 提供)
+        industry = ""
+        rs_ind = self._run_query(lambda: bs.query_stock_industry(code=bs_code))
+        if rs_ind is not None and rs_ind.error_code == "0":
+            # 字段: updateDate, code, code_name, industry, industryClassification
+            while rs_ind.next():
+                ind_row = rs_ind.get_row_data()
+                if len(ind_row) >= 4 and ind_row[1] == bs_code:
+                    industry = ind_row[3]
+                    break
+
+        return {
+            "industry": industry,
+            "list_date": ipo_date,
+            "company_name": name,
+        }

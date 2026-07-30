@@ -63,7 +63,7 @@
     </div>
 
     <div class="footer">
-      用户训练端 · 仅供训练使用
+      K线交易训练 · 提升K线审美
     </div>
   </div>
 </template>

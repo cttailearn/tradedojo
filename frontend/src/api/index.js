@@ -16,8 +16,24 @@ import router from '@/router'
 import { useAuthStore } from '@/stores/auth'
 import { useTrainAuthStore } from '@/stores/trainAuth'
 
+// =============================================================================
+// baseURL 配置:
+//   - 默认:用 Vite proxy 相对路径 /api(适合本地后端 dev,无 CORS 问题)
+//   - 想打线上 API:在 .env.development.local 里设 VITE_API_BASE=https://api.cttai.art/api
+//     然后 npm run dev 就直接打服务器,不必启本地 FastAPI。
+//     ⚠️ 线上域名走 https 跨域,后端必须把该 origin 放进 STOCK_CORS_ORIGINS,
+//        且 Nginx 不能重复加 Access-Control-Allow-Credentials 头(否则会变成 "true, true"
+//        被浏览器拒掉)。
+//   ⚠️ baseURL 必须以 /api 结尾(后端所有路由都以 /api 为前缀)。
+//     直连本机:VITE_API_BASE=http://127.0.0.1:8000/api
+//     直连线上:VITE_API_BASE=https://api.cttai.art/api
+//     走代理(默认):留空 → /api
+// =============================================================================
+const apiBase = (import.meta.env.VITE_API_BASE || '/api').replace(/\/+$/, '')
+// 自动补全 /api 后缀(若用户漏写,直接拼接的请求会落到错误的路径)
+const _normalizedBase = apiBase.endsWith('/api') ? apiBase : `${apiBase}/api`
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: _normalizedBase,
   timeout: 60000,
   withCredentials: true, // 关键:带 cookie
 })
@@ -36,6 +52,9 @@ function isWriteMethod(method) {
 // 请求拦截器: Bearer + CSRF
 api.interceptors.request.use((cfg) => {
   const url = cfg.url || ''
+  // /train/admin/* 是管理员用的训练后台接口 → 走 admin token
+  // 其他 /train/* 是用户端 → 走 train token
+  // 其余全部走 admin token (管理端 API)
   let store = null
   if (url.includes('/train/admin/')) {
     store = useAuthStore()
@@ -48,8 +67,9 @@ api.interceptors.request.use((cfg) => {
   if (store?.token) {
     cfg.headers.Authorization = `Bearer ${store.token}`
   }
-  // 2. 写操作时附加 CSRF header(双 cookie 模式)
-  if (isWriteMethod(cfg.method)) {
+  // 2. 写操作时附加 CSRF header(双 cookie 模式,管理端)
+  //    训练端不发(后端训练 token 没绑 cookie,也不校验 CSRF)
+  if (isWriteMethod(cfg.method) && store === useAuthStore()) {
     const csrf = readCookie('tdj_csrf')
     if (csrf) cfg.headers['X-CSRF-Token'] = csrf
   }
@@ -57,6 +77,13 @@ api.interceptors.request.use((cfg) => {
 })
 
 // 响应拦截器
+// 401 跳转策略:
+//   - 当前路由属于 admin (/admin/*) → 跳 /admin/login,清理 admin token
+//   - 当前路由属于 train (/train/*、根 / ) → 跳 /(训练登录),清理 train token
+//   - 其他兜底:
+//       - url 是 /api/train/* → 当成 train 跳 /
+//       - 其余 → 当成 admin 跳 /admin/login
+//   这样无论接口是哪个 token 失败,落到对应用户的登录页,绝不会把训练用户扔回 admin。
 api.interceptors.response.use(
   (resp) => {
     const body = resp.data
@@ -75,27 +102,32 @@ api.interceptors.response.use(
     const msg = data?.detail || data?.message || err.message || '请求失败'
 
     if (status === 401) {
-      if (url.includes('/train/admin/')) {
-        const auth = useAuthStore()
-        auth.clear()
-        if (router.currentRoute.value.path !== '/admin/login') {
-          ElMessage.error('管理员登录已过期,请重新登录')
-          router.push('/admin/login')
-        }
-      } else if (url.includes('/train/')) {
+      const path = router.currentRoute.value.path || ''
+      const onAdminPage = path.startsWith('/admin')
+      const onTrainPage = path === '/' || path.startsWith('/train')
+
+      // URL 维度:谁家的请求(只用于"URL 决定 app 走向"这一层)
+      const isTrainUrl = url.includes('/train/') && !url.includes('/train/admin/')
+
+      // 更稳妥:URL 中能区分的全部按 URL;无法区分时按当前所在路由
+      let app = 'admin'
+      if (isTrainUrl) app = 'train'
+      else if (onTrainPage && !onAdminPage) app = 'train'
+      // else admin (兜底)
+
+      if (app === 'train') {
         const t = useTrainAuthStore()
         t.clear()
-        const isTrainPage = router.currentRoute.value.path.startsWith('/train/')
-        if (isTrainPage && router.currentRoute.value.path !== '/') {
+        if (path !== '/' && onTrainPage) {
           ElMessage.error('用户端登录已过期,请重新登录')
-          router.push('/')
+          router.push({ path: '/', query: { redirect: path } })
         }
       } else {
         const auth = useAuthStore()
         auth.clear()
-        if (router.currentRoute.value.path !== '/admin/login') {
+        if (path !== '/admin/login') {
           ElMessage.error('管理员登录已过期,请重新登录')
-          router.push('/admin/login')
+          router.push({ path: '/admin/login', query: { redirect: path } })
         }
       }
       return Promise.reject(new Error('登录已过期'))
