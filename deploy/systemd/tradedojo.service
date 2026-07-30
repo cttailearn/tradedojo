@@ -1,0 +1,58 @@
+# =============================================================================
+# TradeDojo systemd unit
+# 路径: /etc/systemd/system/tradedojo.service
+# 启用:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable tradedojo
+#   sudo systemctl start tradedojo
+# 日志:
+#   sudo journalctl -u tradedojo -f
+# =============================================================================
+
+[Unit]
+Description=TradeDojo FastAPI Backend (uv)
+Documentation=https://github.com/cttailearn/tradedojo
+After=network-online.target
+Wants=network-online.target
+# StartLimit* 系列必须放在 [Unit] 段(systemd v230+),不放这里一律报错
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/tradedojo/backend
+
+# ---- 环境变量:从外部 .env 注入 ----
+EnvironmentFile=/root/tradedojo/.env
+
+# ---- 命令:用 uv 跑 ----
+ExecStart=/root/.local/bin/uv run main.py
+
+# ---- 失败重启(写在 [Service] 段) ----
+Restart=on-failure
+RestartSec=5
+
+# ---- 进程资源限制 ----
+LimitNOFILE=65535
+LimitNPROC=65535
+
+# ---- 额外 Python 环境 ----
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+
+# ---- 日志:走 journald ----
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tradedojo
+
+# ---- 安全加固 ----
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/root/tradedojo/backend/data /root/tradedojo/backend/logs
+
+[Install]
+WantedBy=multi-user.target

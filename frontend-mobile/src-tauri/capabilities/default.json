@@ -1,0 +1,25 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "K线交易训练 默认 capability(桌面 + Android 通用)",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:app:default",
+    "core:event:default",
+    "core:webview:default",
+    "core:path:default",
+    "core:menu:default",
+    "core:tray:default",
+
+    "dialog:default",
+    "fs:default",
+    "http:default",
+    "os:default",
+    "shell:default",
+    "store:default",
+    "log:default",
+    "notification:default"
+  ]
+}

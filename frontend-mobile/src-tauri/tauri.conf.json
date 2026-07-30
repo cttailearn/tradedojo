@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "productName": "操盘道场",
+  "version": "1.0.0",
+  "identifier": "art.cttai.tradedojo.mobile",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5174",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "操盘道场",
+        "width": 400,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' tauri: ipc: https://ipc.localhost; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: asset: https://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: https://ipc.localhost https://api.cttai.art https://api.cttai.cn http://127.0.0.1:8000 ws: wss:; media-src 'self' blob: asset: https://asset.localhost; object-src 'none'; base-uri 'self';"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "publisher": "cttai",
+    "category": "Finance",
+    "shortDescription": "K线交易训练 App",
+    "longDescription": "基于真实历史 A 股的 K 线模拟交易训练系统",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../dist": "dist"
+    },
+    "android": {
+      "minSdkVersion": 24
+    }
+  }
+}

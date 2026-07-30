@@ -1,0 +1,89 @@
+/* ============================================================
+ * Tradedojo Mobile 设计系统 - CSS 自定义属性
+ * 设计稿基准 375px (iPhone SE 1代 / 12 mini)
+ * 在 PostCSS 配合下 1rem = 100px = 2.5vw (375视口)
+ * ============================================================ */
+
+:root {
+  /* ───── 品牌色 ───── */
+  --color-primary:        #2563eb;
+  --color-primary-light:  #3b82f6;
+  --color-primary-lighter:#eff6ff;
+  --color-primary-dark:   #1d4ed8;
+
+  /* 功能色 */
+  --color-success: #10b981;
+  --color-warning: #f59e0b;
+  --color-danger:  #ef4444;
+  --color-info:    #6366f1;
+
+  /* A股红涨绿跌 */
+  --color-up:      #ef4444;
+  --color-up-bg:   #fef2f2;
+  --color-down:    #10b981;
+  --color-down-bg: #ecfdf5;
+
+  /* 中性背景 / 文字 / 边框 */
+  --bg-page:    #f8f9fb;
+  --bg-card:    #ffffff;
+  --bg-muted:   #f1f5f9;
+  --bg-hover:   #f1f5f9;
+  --bg-tabbar:  #ffffff;
+
+  --text-primary:    #0f172a;
+  --text-regular:    #334155;
+  --text-secondary:  #64748b;
+  --text-placeholder:#94a3b8;
+  --text-disabled:   #cbd5e1;
+  --text-inverse:    #ffffff;
+
+  --border-color:       #e2e8f0;
+  --border-color-light: #f1f5f9;
+
+  /* ───── 字体 ───── */
+  --font-sans: "Inter", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", Consolas, monospace;
+  --font-num: "DIN Alternate", "Helvetica Neue", sans-serif;
+
+  /* ───── 阴影 ───── */
+  --shadow-xs: 0 1px 4px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.10);
+  --shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.14);
+
+  /* ───── 圆角 ───── */
+  --radius-xs: 0.08rem;   /* 4 */
+  --radius-sm: 0.12rem;  /* 6 */
+  --radius-md: 0.16rem;  /* 8 */
+  --radius-lg: 0.20rem;  /* 10 */
+  --radius-xl: 0.28rem;  /* 14 */
+  --radius-full: 9999px;
+
+  /* ───── 间距(基于 rem)───── */
+  --sp-xs: 0.04rem;   /* 2 */
+  --sp-sm: 0.08rem;   /* 4 */
+  --sp-md: 0.12rem;   /* 6 */
+  --sp-lg: 0.16rem;   /* 8 */
+  --sp-xl: 0.20rem;   /* 10 */
+  --sp-2xl:0.24rem;   /* 12 */
+  --sp-3xl:0.32rem;   /* 16 */
+  --sp-4xl:0.40rem;   /* 20 */
+  --sp-5xl:0.56rem;   /* 28 */
+  --sp-6xl:0.72rem;   /* 36 */
+
+  /* ───── 安卓安全区 ───── */
+  --safe-top:    env(safe-area-inset-top,    0);
+  --safe-bottom: env(safe-area-inset-bottom, 0);
+  --safe-left:   env(safe-area-inset-left,   0);
+  --safe-right:  env(safe-area-inset-right,  0);
+
+  /* 顶部状态栏高度(刘海/挖孔预留) */
+  --statusbar-h: 0.44rem; /* 22 - 大部分安卓 */
+
+  /* 底部 TabBar */
+  --tabbar-h: 1.20rem;    /* 60 */
+  --tabbar-with-safe: calc(var(--tabbar-h) + var(--safe-bottom));
+
+  /* 顶部 navbar */
+  --navbar-h: 0.92rem;    /* 46 - 类微信尺寸 */
+}

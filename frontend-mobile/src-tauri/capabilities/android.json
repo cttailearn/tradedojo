@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/android-schema.json",
+  "identifier": "android",
+  "description": "K线交易训练 Android 专属 capability",
+  "platforms": ["android"],
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:app:default",
+    "core:event:default",
+    "core:webview:default",
+    "core:path:default",
+    "core:window:allow-set-title",
+
+    "dialog:default",
+    "fs:default",
+    "http:default",
+    "os:default",
+    "shell:default",
+    "store:default",
+    "log:default",
+    "notification:default"
+  ]
+}

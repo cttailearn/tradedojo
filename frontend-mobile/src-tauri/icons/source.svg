@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- 圆形主底渐变:深蓝 → 紫蓝 -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#1e3a8a"/>
+      <stop offset="55%"  stop-color="#1e40af"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+
+    <!-- K线主体红色渐变(A 股红涨) -->
+    <linearGradient id="red" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fb7185"/>
+      <stop offset="100%" stop-color="#ef4444"/>
+    </linearGradient>
+
+    <!-- K线下跌绿色 -->
+    <linearGradient id="green" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+
+    <!-- 上升箭头金色高光 -->
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fde68a"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+
+    <!-- 背景径向光晕 -->
+    <radialGradient id="glow" cx="50%" cy="38%" r="60%">
+      <stop offset="0%"  stop-color="#3b82f6" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- 白色高光(让图标有质感) -->
+    <radialGradient id="sheen" cx="30%" cy="20%" r="55%">
+      <stop offset="0%"  stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="60%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 圆形外轮廓 -->
+  <circle cx="512" cy="512" r="512" fill="url(#bg)"/>
+  <circle cx="512" cy="512" r="512" fill="url(#glow)"/>
+
+  <!-- 网格底纹(弱化) -->
+  <g opacity="0.12" stroke="#93c5fd" stroke-width="2">
+    <line x1="0" y1="200"  x2="1024" y2="200"/>
+    <line x1="0" y1="400"  x2="1024" y2="400"/>
+    <line x1="0" y1="600"  x2="1024" y2="600"/>
+    <line x1="0" y1="800"  x2="1024" y2="800"/>
+    <line x1="200"  y1="0" x2="200"  y2="1024"/>
+    <line x1="400"  y1="0" x2="400"  y2="1024"/>
+    <line x1="600"  y1="0" x2="600"  y2="1024"/>
+    <line x1="800"  y1="0" x2="800"  y2="1024"/>
+  </g>
+
+  <!-- 5 根 K 线,从左到右 "上涨" 趋势 -->
+  <!-- K1(绿跌) -->
+  <g transform="translate(220 0)">
+    <line x1="40" y1="640" x2="40" y2="780" stroke="#10b981" stroke-width="10"/>
+    <rect x="14" y="660" width="52" height="100" fill="url(#green)" rx="4"/>
+  </g>
+
+  <!-- K2(红涨) -->
+  <g transform="translate(330 0)">
+    <line x1="40" y1="580" x2="40" y2="740" stroke="#ef4444" stroke-width="10"/>
+    <rect x="14" y="600" width="52" height="120" fill="url(#red)" rx="4"/>
+  </g>
+
+  <!-- K3(红涨) -->
+  <g transform="translate(440 0)">
+    <line x1="40" y1="500" x2="40" y2="660" stroke="#ef4444" stroke-width="10"/>
+    <rect x="14" y="520" width="52" height="120" fill="url(#red)" rx="4"/>
+  </g>
+
+  <!-- K4(红涨,更大) -->
+  <g transform="translate(550 0)">
+    <line x1="40" y1="380" x2="40" y2="560" stroke="#ef4444" stroke-width="10"/>
+    <rect x="14" y="400" width="52" height="140" fill="url(#red)" rx="4"/>
+  </g>
+
+  <!-- K5(红涨,最高) -->
+  <g transform="translate(660 0)">
+    <line x1="40" y1="250" x2="40" y2="430" stroke="#ef4444" stroke-width="10"/>
+    <rect x="14" y="270" width="52" height="140" fill="url(#red)" rx="4"/>
+  </g>
+
+  <!-- 上升箭头(从左下到右上,穿过 K线) -->
+  <g stroke="url(#gold)" stroke-width="36" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+    <path d="M 160 760 L 800 240"/>
+    <polyline points="640,240 800,240 800,400"/>
+  </g>
+
+  <!-- 大写 "K" 字母(右下角徽标,代表 K线) -->
+  <g transform="translate(670 690)" fill="#ffffff" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" font-weight="900">
+    <text x="0" y="0" font-size="320" text-anchor="middle" dominant-baseline="alphabetic"
+          style="letter-spacing:-12px;">K</text>
+    <!-- 装饰小点(代表价格跳动) -->
+    <circle cx="120" cy="-90" r="20" fill="#fb7185"/>
+    <circle cx="60"  cy="-160" r="14" fill="#fde68a"/>
+  </g>
+
+  <!-- 顶部高光,模拟金属反光,让圆形不死板 -->
+  <circle cx="512" cy="512" r="512" fill="url(#sheen)"/>
+  <!-- 圆形描边 -->
+  <circle cx="512" cy="512" r="510" fill="none" stroke="#1e293b" stroke-width="4" opacity="0.6"/>
+</svg>
