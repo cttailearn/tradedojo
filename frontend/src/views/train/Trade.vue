@@ -22,12 +22,26 @@
         </div>
         <div class="m-block">
           <div class="lbl">可用资金</div>
-          <div class="val">¥ {{ money(session?.cash) }}</div>
+          <div class="val">¥ {{ money(walletBalance) }}</div>
           <div class="meta">初始 ¥ {{ money(session?.initial_cash) }}</div>
         </div>
         <div class="m-block">
           <div class="lbl">持仓市值</div>
           <div class="val">¥ {{ money(session?.market_value) }}</div>
+        </div>
+        <div class="m-block m-actions">
+          <div class="lbl">训练操作</div>
+          <div class="val actions-row">
+            <el-button type="warning" plain size="small" @click="finish"
+                      :disabled="session?.status === 'finished'">
+              <el-icon><CircleClose /></el-icon>
+              {{ session?.status === 'finished' ? '已结束' : '结束训练' }}
+            </el-button>
+            <el-button type="info" plain size="small"
+                      @click="$router.push(`/train/report/${sessionId}`)">
+              <el-icon><Document /></el-icon>训练总结
+            </el-button>
+          </div>
         </div>
       </div>
 
@@ -51,37 +65,18 @@
             ({{ weeklyHint }}) · 仅当前日及更早可见
           </div>
         </div>
-        <div class="action-block">
-          <el-button-group>
-            <el-button :disabled="!canAdvance || advancing" :loading="advancing"
-                        @click="advance(1)">
-              <el-icon><Right /></el-icon>推进 1 天
-            </el-button>
-            <el-button :disabled="!canAdvance || advancing" :loading="advancing"
-                        @click="advance(5)">+5 天</el-button>
-            <el-button :disabled="!canAdvance || advancing" :loading="advancing"
-                        @click="advance(30)">+30 天</el-button>
-          </el-button-group>
-          <el-button type="warning" plain size="small"
-                    @click="finish" :disabled="session?.status === 'finished'">
-            <el-icon><CircleClose /></el-icon>{{ session?.status === 'finished' ? '已结束' : '结束训练' }}
-          </el-button>
-          <el-button type="info" plain size="small"
-                    @click="$router.push(`/train/report/${sessionId}`)">
-            <el-icon><Document /></el-icon>诊断报告
-          </el-button>
-        </div>
       </div>
     </div>
 
-    <!-- 主体:左 K 线,右 资金曲线 + 交易面板 -->
-    <el-row :gutter="16" style="margin-top: 16px;">
+    <!-- 主体:K线(左大) + 时间推进(右上) + 下单(右下,买/卖按股) + 持仓 + 成交/资金曲线 -->
+    <el-row :gutter="16" class="trade-top">
+      <!-- 左:K线图 -->
       <el-col :xs="24" :sm="24" :md="16" :lg="16">
         <div class="page-card">
           <div class="chart-head">
-            <div>
+            <div class="chart-head-left">
               <span class="t">K 线图</span>
-              <el-radio-group v-model="period" size="small" style="margin-left: 12px;"
+              <el-radio-group v-model="period" size="small" class="period-group"
                               @change="loadKline">
                 <el-radio-button value="daily">日 K</el-radio-button>
                 <el-radio-button value="weekly">周 K</el-radio-button>
@@ -89,7 +84,7 @@
               </el-radio-group>
               <span class="hint">
                 当前价(收盘): ¥ {{ currentPrice.toFixed(2) }}
-                <span v-if="pctToday !== null" :class="pctToday >= 0 ? 'red' : 'green'">
+                <span v-if="pctToday !== null" :class="pctToday >= 0 ? 'green' : 'red'">
                   ({{ pctToday >= 0 ? '+' : '' }}{{ pctToday.toFixed(2) }}%)
                 </span>
               </span>
@@ -97,7 +92,7 @@
             <div class="bench-pick">
               <span class="hint">对照指数:</span>
               <el-select v-model="benchCode" placeholder="不叠加" clearable size="small"
-                         style="width: 180px;" @change="loadBenchmark">
+                         class="bench-select" @change="loadBenchmark">
                 <el-option
                   v-for="i in benchList" :key="i.code"
                   :label="`${i.name} (${i.code})`" :value="i.code"
@@ -139,86 +134,105 @@
             </div>
           </el-alert>
         </div>
-
-        <div class="page-card" style="margin-top: 16px;">
-          <div class="chart-head">
-            <h3 class="page-title">资金曲线</h3>
-            <span class="hint">含历史初始资金 ¥ {{ money(session?.initial_cash) }}</span>
-          </div>
-          <div ref="equityChartEl" class="equity-chart" />
-        </div>
       </el-col>
 
+      <!-- 右:时间推进(上) + 下单(下) -->
       <el-col :xs="24" :sm="24" :md="8" :lg="8">
+        <!-- 1) 时间推进(独立卡) -->
         <div class="page-card">
+          <h3 class="page-title">
+            时间推进
+            <span class="hint" style="float:right; font-weight:normal; font-size:12px;">
+              仅揭示未来,不可倒退
+            </span>
+          </h3>
+          <div class="advance-row">
+            <el-button class="advance-btn" :disabled="!canAdvance || advancing"
+                       :loading="advancing" @click="advance(1)">
+              <el-icon><Right /></el-icon>推进 1 天
+            </el-button>
+            <el-button class="advance-btn" :disabled="!canAdvance || advancing"
+                       :loading="advancing" @click="advance(5)">+5 天</el-button>
+            <el-button class="advance-btn" :disabled="!canAdvance || advancing"
+                       :loading="advancing" @click="advance(30)">+30 天</el-button>
+          </div>
+          <div class="advance-extra">
+            <span class="hint" style="color:#909399; font-size:12px;">在顶部进度区已提供"结束训练 / 训练总结"</span>
+          </div>
+        </div>
+
+        <!-- 2) 下单(买/卖都按股) -->
+        <div class="page-card" style="margin-top: 12px;">
           <h3 class="page-title">下单</h3>
-          <el-tabs v-model="tradeTab">
-            <el-tab-pane label="买入" name="buy">
-              <el-form label-position="top">
-                <el-form-item label="买入金额 (元)">
-                  <el-input-number v-model="buyForm.amount" :min="1000" :step="10000"
-                                   style="width: 100%" />
+          <div class="trade-pane">
+            <!-- 买入 -->
+            <div class="trade-pane-col trade-pane-buy">
+              <div class="trade-pane-header">
+                <el-icon color="#ef232a"><Top /></el-icon>
+                <span>买入</span>
+              </div>
+              <el-form label-position="top" class="trade-form">
+                <el-form-item label="买入股数 (100 股整数倍)">
+                  <el-input-number v-model="buyForm.quantity" :min="100" :step="100"
+                                   class="full-width" />
                 </el-form-item>
-                <el-form-item label="快捷选择 (仓位 / 自定义股数)">
-                  <el-radio-group v-model="buyPreset" size="small" @change="applyBuyPreset">
-                    <el-radio-button value="cash_quarter">1/4 仓</el-radio-button>
+                <el-form-item label="快捷选择 (按持仓资金)">
+                  <el-radio-group v-model="buyPreset" size="small"
+                                  class="preset-radio" @change="applyBuyPreset">
                     <el-radio-button value="cash_half">1/2 仓</el-radio-button>
+                    <el-radio-button value="cash_third">1/3 仓</el-radio-button>
                     <el-radio-button value="cash_all">全仓</el-radio-button>
                     <el-radio-button value="custom">自定义股</el-radio-button>
                   </el-radio-group>
-                  <div v-if="buyPreset === 'custom'" style="margin-top: 8px;">
+                  <div v-if="buyPreset === 'custom'" class="custom-row">
                     <el-input-number v-model="customBuyShares" :min="100" :step="100"
-                                     :max="100000" style="width: 200px;" />
-                    <span style="margin-left: 8px; color: #909399; font-size: 12px;">
-                      股 (100 整数倍) · 约 ¥ {{ money((customBuyShares || 0) * currentPrice) }} 元
-                    </span>
+                                     :max="100000" class="custom-shares" />
+                    <span class="custom-hint">股 (100 整数倍)</span>
                   </div>
-                  <div class="preset-hint">提示:全仓会预留 5% 资金用于手续费;自定义股按 100 整数倍</div>
                 </el-form-item>
                 <el-form-item label="限价 (可选,默认按收盘价)">
                   <el-input-number v-model="buyForm.price" :min="0.01" :step="0.01"
-                                   :precision="2" style="width: 100%" placeholder="不填按收盘价" />
+                                   :precision="2" class="full-width" placeholder="不填按收盘价" />
                 </el-form-item>
                 <el-alert :closable="false" type="info" show-icon>
                   将按 100 股取整,自动扣除 <b>¥ {{ money(estimateFees('buy')) }}</b> 元手续费(估)
-                  <div v-if="estimatedBuyQty > 0" class="estimated-qty">
-                    约买入 <b>{{ estimatedBuyQty }}</b> 股
-                  </div>
                 </el-alert>
-                <div style="margin-top: 12px;">
+                <div class="trade-action">
                   <el-button type="primary" :loading="trading" :disabled="!canTrade"
-                            style="width: 100%;" @click="submit('BUY')">
+                            class="full-width" @click="submit('BUY')">
                     <el-icon><Top /></el-icon>买入 (按收盘价)
                   </el-button>
                 </div>
               </el-form>
-            </el-tab-pane>
-            <el-tab-pane label="卖出" name="sell">
-              <el-form label-position="top">
+            </div>
+            <!-- 卖出 -->
+            <div class="trade-pane-col trade-pane-sell">
+              <div class="trade-pane-header">
+                <el-icon color="#14b066"><Bottom /></el-icon>
+                <span>卖出</span>
+              </div>
+              <el-form label-position="top" class="trade-form">
                 <el-form-item label="卖出股数 (100 股整数倍)">
                   <el-input-number v-model="sellForm.quantity" :min="100" :step="100"
-                                   style="width: 100%" />
+                                   class="full-width" />
                 </el-form-item>
-                <el-form-item label="快捷选择 (仓位 / 自定义股数)">
-                  <el-radio-group v-model="sellPreset" size="small" @change="applySellPreset">
-                    <el-radio-button value="eighth">1/8</el-radio-button>
-                    <el-radio-button value="quarter">1/4</el-radio-button>
-                    <el-radio-button value="third">1/3</el-radio-button>
-                    <el-radio-button value="half">1/2</el-radio-button>
-                    <el-radio-button value="all">全部</el-radio-button>
+                <el-form-item label="快捷选择 (按当前持仓)">
+                  <el-radio-group v-model="sellPreset" size="small"
+                                  class="preset-radio" @change="applySellPreset">
+                    <el-radio-button value="half">1/2 仓</el-radio-button>
+                    <el-radio-button value="third">1/3 仓</el-radio-button>
+                    <el-radio-button value="all">全仓</el-radio-button>
                     <el-radio-button value="custom">自定义股</el-radio-button>
                   </el-radio-group>
-                  <div v-if="sellPreset === 'custom'" style="margin-top: 8px;">
+                  <div v-if="sellPreset === 'custom'" class="custom-row">
                     <el-input-number v-model="customSellShares" :min="100" :step="100"
-                                     :max="myPositionQty" style="width: 200px;" />
-                    <span style="margin-left: 8px; color: #909399; font-size: 12px;">
-                      股 (100 整数倍,最大 {{ myPositionQty }})
-                    </span>
+                                     :max="myPositionQty" class="custom-shares" />
+                    <span class="custom-hint">股 (100 整数倍,最大 {{ myPositionQty }})</span>
                   </div>
                 </el-form-item>
                 <el-form-item label="限价 (可选,默认按收盘价)">
                   <el-input-number v-model="sellForm.price" :min="0.01" :step="0.01"
-                                   :precision="2" style="width: 100%" placeholder="不填按收盘价" />
+                                   :precision="2" class="full-width" placeholder="不填按收盘价" />
                 </el-form-item>
                 <el-alert :closable="false" type="warning" show-icon>
                   当前持仓 <b>{{ myPositionQty }}</b> 股,均价 <b>¥ {{ myAvgCost.toFixed(2) }}</b>
@@ -226,18 +240,23 @@
                     预计实现盈亏: <b>{{ sellEstimatedPnl >= 0 ? '+' : '' }}{{ money(sellEstimatedPnl) }}</b> 元
                   </div>
                 </el-alert>
-                <div style="margin-top: 12px;">
+                <div class="trade-action">
                   <el-button type="danger" :loading="trading" :disabled="!canTrade"
-                            style="width: 100%;" @click="submit('SELL')">
+                            class="full-width" @click="submit('SELL')">
                     <el-icon><Bottom /></el-icon>卖出
                   </el-button>
                 </div>
               </el-form>
-            </el-tab-pane>
-          </el-tabs>
+            </div>
+          </div>
         </div>
+      </el-col>
+    </el-row>
 
-        <div class="page-card" style="margin-top: 16px;">
+    <!-- 下方:当前持仓 + 成交记录 + 资金曲线 -->
+    <el-row :gutter="16" class="trade-bottom">
+      <el-col :xs="24" :sm="24" :md="24" :lg="24">
+        <div class="page-card">
           <h3 class="page-title">当前持仓</h3>
           <el-table :data="session?.positions || []" size="small" stripe>
             <el-table-column prop="code" label="代码" width="90" />
@@ -261,11 +280,13 @@
           </el-table>
           <el-empty v-if="!(session?.positions || []).length" description="暂无持仓,试试买点" :image-size="60" />
         </div>
+      </el-col>
 
-        <div class="page-card" style="margin-top: 16px;">
+      <el-col :xs="24" :sm="24" :md="14" :lg="14">
+        <div class="page-card">
           <h3 class="page-title">成交记录</h3>
           <el-table :data="session?.recent_orders || []" size="small" stripe
-                    :max-height="220">
+                    :max-height="260">
             <el-table-column prop="trade_date" label="日期" width="100" />
             <el-table-column label="方向" width="56">
               <template #default="{ row }">
@@ -293,6 +314,15 @@
           <el-empty v-if="!(session?.recent_orders || []).length" description="还没有成交" :image-size="60" />
         </div>
       </el-col>
+      <el-col :xs="24" :sm="24" :md="10" :lg="10">
+        <div class="page-card">
+          <div class="chart-head">
+            <h3 class="page-title" style="margin:0;">资金曲线</h3>
+            <span class="hint">含初始 ¥ {{ money(session?.initial_cash) }}</span>
+          </div>
+          <div ref="equityChartEl" class="equity-chart" />
+        </div>
+      </el-col>
     </el-row>
   </div>
 </template>
@@ -303,12 +333,15 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import { trainApi, tasksApi } from '@/api/modules'
+import { useTrainAuthStore } from '@/stores/trainAuth'
 
 const route = useRoute()
 const router = useRouter()
 const id = computed(() => Number(route.params.id))
+const auth = useTrainAuthStore()
 
 const session = ref(null)
+const walletBalance = computed(() => Number(auth.wallet?.balance || 0))
 const klineBars = ref([])
 const equity = ref([])
 // 对照指数
@@ -326,7 +359,7 @@ const buyPreset = ref('')
 const sellPreset = ref('')
 const customBuyShares = ref(100)
 const customSellShares = ref(100)
-const buyForm = reactive({ amount: 100000, price: null })
+const buyForm = reactive({ quantity: 1000, price: null })
 const sellForm = reactive({ quantity: 100, price: null })
 
 let klineChart = null
@@ -367,8 +400,8 @@ const myAvgCost = computed(() => {
 })
 
 const estimatedBuyQty = computed(() => {
-  if (!currentPrice.value || !buyForm.amount) return 0
-  return Math.floor(buyForm.amount / (currentPrice.value * 100)) * 100
+  if (!currentPrice.value) return 0
+  return Math.max(100, Math.round((buyForm.quantity || 0) / 100) * 100)
 })
 
 const sellEstimatedPnl = computed(() => {
@@ -424,7 +457,9 @@ function estimateFees(side) {
   const f = session.value.fee_rules
   const price = currentPrice.value
   if (!price) return 0
-  const amt = side === 'buy' ? (buyForm.amount || 0) : (sellForm.quantity || 0) * price
+  const amt = side === 'buy'
+    ? (buyForm.quantity || 0) * price
+    : (sellForm.quantity || 0) * price
   if (!amt) return 0
   const commission = Math.max(amt * f.commission_rate, f.min_commission)
   const stamp = side === 'sell' ? amt * f.stamp_tax : 0
@@ -434,23 +469,26 @@ function estimateFees(side) {
 
 function applyBuyPreset(v) {
   if (!v) return
-  const cash = session.value?.cash || 0
+  const cash = walletBalance.value || 0
   const price = currentPrice.value || 0
-  if (v === 'cash_quarter') {
-    // 1/4 仓位
-    buyForm.amount = Math.floor((cash * 0.25) / 1000) * 1000
-  } else if (v === 'cash_half') {
-    buyForm.amount = Math.floor((cash * 0.5) / 1000) * 1000
+  const sharesFromCash = (multi) => {
+    // 留 5% 给手续费,计算能买的股数
+    const budget = cash * multi * 0.95
+    if (!price) return 100
+    return Math.max(100, Math.floor(budget / (price * 100)) * 100)
+  }
+  if (v === 'cash_half') {
+    buyForm.quantity = sharesFromCash(0.5)
+  } else if (v === 'cash_third') {
+    buyForm.quantity = sharesFromCash(1 / 3)
   } else if (v === 'cash_all') {
-    // 全仓:留 5% 给手续费与最低限价余量
-    buyForm.amount = Math.floor((cash * 0.95) / 1000) * 1000
+    buyForm.quantity = sharesFromCash(0.95)
   } else if (v === 'custom') {
-    // 自定义股:按 100 整数倍 → 折算金额(向上取整到 100 元)
     const shares = Math.max(100, Math.round(customBuyShares.value / 100) * 100)
     customBuyShares.value = shares
-    buyForm.amount = Math.ceil((shares * price) / 100) * 100
+    buyForm.quantity = shares
   } else {
-    buyForm.amount = Number(v)
+    buyForm.quantity = Math.max(100, Math.round((Number(v) || 0) / 100) * 100)
   }
 }
 
@@ -458,9 +496,7 @@ function applySellPreset(v) {
   if (!v) return
   const qty = myPositionQty.value || 0
   const r100 = (n) => Math.max(100, Math.floor(n / 100) * 100)
-  if (v === 'eighth') sellForm.quantity = r100(qty * 0.125)
-  else if (v === 'quarter') sellForm.quantity = r100(qty * 0.25)
-  else if (v === 'third') sellForm.quantity = r100(qty / 3)
+  if (v === 'third') sellForm.quantity = r100(qty / 3)
   else if (v === 'half') sellForm.quantity = r100(qty * 0.5)
   else if (v === 'all') sellForm.quantity = qty
   else if (v === 'custom') {
@@ -470,11 +506,12 @@ function applySellPreset(v) {
   }
 }
 
-// 自定义股数变化时,实时同步到 buyForm.amount / sellForm.quantity
+// 自定义股数变化时,实时同步到 buyForm.quantity
 watch([customBuyShares, currentPrice], () => {
   if (buyPreset.value === 'custom') {
     const shares = Math.max(100, Math.round(customBuyShares.value / 100) * 100)
-    buyForm.amount = Math.ceil((shares * (currentPrice.value || 0)) / 100) * 100
+    customBuyShares.value = shares
+    buyForm.quantity = shares
   }
 })
 watch([customSellShares, myPositionQty], () => {
@@ -559,8 +596,9 @@ async function triggerKlineUpdate() {
     const r = await tasksApi.trigger({
       task: 'sync_latest',
       params: {
-        days_back: 365, adjust: 'qfq',
+        days_back: 120, adjust: 'qfq',
         workers: 2, codes: [code],
+        since_list_date: true,
       },
     })
     ElMessage.success(
@@ -580,6 +618,89 @@ async function loadEquity() {
     await nextTick()
     renderEquity()
   } catch {}
+}
+
+// 从 session.recent_orders(已按时序)构建买卖点位 + 持仓区间
+// 颜色用中国市场习惯:买入红(▲)、卖出绿(▼)
+function buildTradeMarks(dates, lastDate, lastClose, lastUp) {
+  const orders = Array.isArray(session.value?.recent_orders)
+    ? session.value.recent_orders.slice().reverse()  // 转升序
+    : []
+  const dateIdx = new Map(dates.map((d, i) => [d, i]))
+  const points = orders.flatMap((o) => {
+    if (!dateIdx.has(o.trade_date)) return []
+    const idx = dateIdx.get(o.trade_date)
+    const bar = klineBars.value[idx]
+    if (!bar) return []
+    const isBuy = o.side === 'BUY'
+    return [{
+      name: isBuy ? '买' : '卖',
+      coord: [o.trade_date, Number(o.price)],
+      value: isBuy ? 'B' : 'S',
+      itemStyle: {
+        color: isBuy ? '#ef232a' : '#14b066',
+        borderColor: '#fff',
+        borderWidth: 1,
+      },
+      label: {
+        show: true,
+        position: isBuy ? 'top' : 'bottom',
+        color: '#fff',
+        fontSize: 10,
+        fontWeight: 'bold',
+        formatter: () => `${isBuy ? 'B' : 'S'} ${Number(o.price).toFixed(2)}`,
+      },
+    }]
+  })
+  // 保留最新价标牌
+  points.push({
+    name: '最新价',
+    coord: [lastDate, lastClose],
+    value: lastClose.toFixed(2),
+    itemStyle: { color: lastUp ? '#ef232a' : '#14b066' },
+    label: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
+  })
+  return points
+}
+
+// 持仓区间:BUY 起到 后续 SELL(全部)为止;剩余未平仓持仓延伸到 end_date
+function buildTradeAreas(dates) {
+  const orders = Array.isArray(session.value?.recent_orders)
+    ? session.value.recent_orders.slice().reverse()
+    : []
+  if (!orders.length) return []
+  const lastDate = dates[dates.length - 1]
+  const areas = []
+  let openStart = null
+  let openQty = 0
+  for (const o of orders) {
+    if (o.side === 'BUY') {
+      if (!openStart) openStart = o.trade_date
+      openQty += Number(o.quantity || 0)
+    } else if (o.side === 'SELL') {
+      openQty -= Number(o.quantity || 0)
+      if (openQty <= 0 && openStart) {
+        // 区间结束于该卖单日;若 SELL 日没有 K线(节假日),延伸到下一根 K线
+        const endDate = dates.includes(o.trade_date)
+          ? o.trade_date
+          : (dates.find((d) => d >= o.trade_date) || o.trade_date)
+        areas.push([
+          { xAxis: openStart, name: '持仓' },
+          { xAxis: endDate },
+        ])
+        openStart = null
+        openQty = 0
+      }
+    }
+  }
+  // 仍持仓(未平仓) → 延伸到最后一根 K线
+  if (openStart && openQty > 0) {
+    areas.push([
+      { xAxis: openStart, name: '持仓中' },
+      { xAxis: lastDate },
+    ])
+  }
+  return areas
 }
 
 function renderKline() {
@@ -697,10 +818,10 @@ function renderKline() {
           <div style="font-weight:bold; margin-bottom:6px; color:#fff; font-size:13px;">
             ${bar.trade_date} <span style="color:${chgColor}; font-size:11px;">${arrow}</span>
           </div>
-          <div><span style="color:#888;">开</span> <b style="color:#fff;">${bar.open}</b>
-            &nbsp;<span style="color:#888;">收</span> <b style="color:${chgColor};">${bar.close}</b></div>
-          <div><span style="color:#888;">高</span> <b style="color:#ef232a;">${bar.high}</b>
-            &nbsp;<span style="color:#888;">低</span> <b style="color:#14b066;">${bar.low}</b></div>
+          <div><span style="color:#888;">开</span> <b style="color:#fff;">${Number(bar.open).toFixed(2)}</b>
+            &nbsp;<span style="color:#888;">收</span> <b style="color:${chgColor};">${Number(bar.close).toFixed(2)}</b></div>
+          <div><span style="color:#888;">高</span> <b style="color:#ef232a;">${Number(bar.high).toFixed(2)}</b>
+            &nbsp;<span style="color:#888;">低</span> <b style="color:#14b066;">${Number(bar.low).toFixed(2)}</b></div>
           <div><span style="color:#888;">涨跌</span> <b style="color:${chgColor};">
             ${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${chg >= 0 ? '+' : ''}${chgPct}%)</b></div>
           <div><span style="color:#888;">成交量</span> <b style="color:#fff;">${(bar.volume / 10000).toFixed(1)}万手</b>
@@ -743,30 +864,49 @@ function renderKline() {
         axisLine: { lineStyle: { color: '#555' } },
         axisTick: { show: false },
         axisLabel: {
-          color: '#aaa', fontSize: 10,
+          color: '#aaa', fontSize: 10, rotate: 0,
+          interval: 'auto',
+          hideOverlap: true,
           formatter: (val) => {
-            // 月初显示完整 MM-DD,平时只显示 DD
+            // 不同周期显示不同精度的日期
+            //  dail y: 正常只显示日;月初显示 MM-DD
+            //  weekly: 显示周首日 MM-DD
+            //  monthly: 显示 YYYY-MM
+            const cur = period.value
+            if (cur === 'monthly') {
+              // 形如 2025-08,展示 YYYY-MM
+              return val && val.length >= 7 ? val.slice(0, 7) : val
+            }
+            if (cur === 'weekly') {
+              // 周聚合的 trade_date 是桶内首日(YYYY-MM-DD),展示 MM-DD
+              return val && val.length >= 10 ? val.slice(5) : val
+            }
+            // daily
             try {
               const d = new Date(val)
-              if (d.getDate() <= 3) return val.slice(5)
+              if (val && val.length >= 10 && d.getDate() <= 3) return val.slice(5)
             } catch {}
-            return val.slice(8)
+            return val && val.length >= 10 ? val.slice(8) : val
           },
         },
       },
     ],
     yAxis: [
       {
-        scale: true,
+        // 主图 Y 轴(价格)
+        scale: true, gridIndex: 0,
         position: 'right',
         axisLine: { lineStyle: { color: '#555' } },
-        axisLabel: { color: '#aaa', fontSize: 10 },
+        axisLabel: {
+          color: '#aaa', fontSize: 10,
+          formatter: (v) => Number(v).toFixed(2),
+        },
         splitLine: { lineStyle: { color: '#1f2937', type: 'dashed' } },
       },
       {
-        // 右侧第二个 yAxis:对照指数的 % (rebased),与主图右对齐
-        scale: true,
-        position: 'right',
+        // 对照指数的 % (rebased),主图叠加
+        scale: true, gridIndex: 0,
+        position: 'right', offset: 48,
         axisLine: { lineStyle: { color: '#665' } },
         axisLabel: {
           color: '#ffd700', fontSize: 9,
@@ -776,6 +916,7 @@ function renderKline() {
         show: !!benchCode.value,
       },
       {
+        // 成交量 Y 轴,子图 grid[1]
         scale: true, gridIndex: 1, position: 'right',
         axisLine: { lineStyle: { color: '#555' } },
         axisLabel: {
@@ -803,6 +944,7 @@ function renderKline() {
     series: [
       {
         name: 'K线', type: 'candlestick', data: ohlc,
+        xAxisIndex: 0, yAxisIndex: 0,
         itemStyle: {
           color: '#ef232a',        // 涨红
           color0: '#14b066',       // 跌绿
@@ -822,16 +964,23 @@ function renderKline() {
           data: startMark,
         },
         markPoint: {
-          symbol: 'pin',
-          symbolSize: 40,
-          symbolOffset: [0, -20],
-          data: [{
-            name: '最新价',
-            coord: [lastDate, lastClose],
-            value: lastClose.toFixed(2),
-            itemStyle: { color: lastUp ? '#ef232a' : '#14b066' },
-            label: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
-          }],
+          // K线上的买/卖标记:红色向上三角=买入,绿色向下三角=卖出
+          // 数字显示在 marker 右侧
+          symbol: 'triangle',
+          symbolSize: 14,
+          symbolOffset: [0, -2],
+          data: buildTradeMarks(dates, lastDate, lastClose, lastUp),
+        },
+        markArea: {
+          // 持仓区间:浅黄绿色半透明背景,标记 BUY->SELL 期间
+          silent: true,
+          itemStyle: {
+            color: 'rgba(251, 191, 36, 0.10)',
+            borderColor: 'rgba(251, 191, 36, 0.35)',
+            borderWidth: 1,
+            borderType: 'dashed',
+          },
+          data: buildTradeAreas(dates),
         },
       },
       { name: 'MA5',  type: 'line', data: ma5,  smooth: true, lineStyle: { width: 1, color: '#ff9800' }, showSymbol: false },
@@ -839,7 +988,7 @@ function renderKline() {
       { name: 'MA20', type: 'line', data: ma20, smooth: true, lineStyle: { width: 1, color: '#2196f3' }, showSymbol: false },
       { name: 'MA30', type: 'line', data: ma30, smooth: true, lineStyle: { width: 1, color: '#9c27b0' }, showSymbol: false },
       { name: 'MA60', type: 'line', data: ma60, smooth: true, lineStyle: { width: 1, color: '#ffc107' }, showSymbol: false },
-      { name: '成交量', type: 'bar', data: volumes, xAxisIndex: 1, yAxisIndex: 1 },
+      { name: '成交量', type: 'bar', data: volumes, xAxisIndex: 1, yAxisIndex: 2 },
       ...benchSeries,
     ],
   }, true)
@@ -878,6 +1027,7 @@ async function advance(days) {
     session.value = await trainApi.advance(id.value, days)
     await loadKline()
     await loadEquity()
+    auth.refreshWallet()
     if (session.value?.current_date >= session.value?.end_date) {
       ElMessage.info('已到达训练终点,无法再推进')
     }
@@ -890,12 +1040,13 @@ async function advance(days) {
 
 async function submit(side) {
   if (side === 'BUY') {
-    if (!buyForm.amount || buyForm.amount < 1000) {
-      return ElMessage.warning('请输入有效买入金额')
+    const qty = Math.max(100, Math.round((buyForm.quantity || 0) / 100) * 100)
+    if (qty < 100) {
+      return ElMessage.warning('请输入有效买入股数 (100 整数倍)')
     }
     try {
       await ElMessageBox.confirm(
-        `买入约 <b>${estimatedBuyQty.value}</b> 股 @ ¥ ${currentPrice.value.toFixed(2)},扣手续费 ¥ ${money(estimateFees('buy'))} 元,确认?`,
+        `买入 <b>${qty}</b> 股 @ ¥ ${currentPrice.value.toFixed(2)},扣手续费 ¥ ${money(estimateFees('buy'))} 元,确认?`,
         '买入确认',
         { confirmButtonText: '确定买入', cancelButtonText: '取消', dangerouslyUseHTMLString: true }
       )
@@ -915,7 +1066,7 @@ async function submit(side) {
   trading.value = true
   try {
     const payload = side === 'BUY'
-      ? { side: 'BUY', amount: buyForm.amount, price: buyForm.price || undefined }
+      ? { side: 'BUY', quantity: buyForm.quantity, price: buyForm.price || undefined }
       : { side: 'SELL', quantity: sellForm.quantity, price: sellForm.price || undefined }
     session.value = await trainApi.trade(id.value, payload)
     ElMessage.success(`${side === 'BUY' ? '买入' : '卖出'}成功`)
@@ -923,6 +1074,7 @@ async function submit(side) {
     sellPreset.value = ''
     await loadKline()
     await loadEquity()
+    auth.refreshWallet()
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -1000,7 +1152,11 @@ watch(() => session.value?.current_date, async () => {
 </script>
 
 <style scoped>
-.trade { padding: 0 4px; }
+.trade { padding: 0 4px; max-width: 1920px; margin: 0 auto; }
+.metric-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.m-block.m-actions { flex: 0 0 auto; min-width: 180px; }
+.actions-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.actions-row :deep(.el-button) { padding: 5px 10px; }
 .metric-bar {
   background: #fff; padding: 14px 18px;
   border-radius: 6px;
@@ -1018,11 +1174,12 @@ watch(() => session.value?.current_date, async () => {
                 line-height: 1.2; color: #303133; }
 .m-block .val.val-sm { font-size: 15px; }
 .m-block .val .code { font-size: 12px; color: #909399; font-weight: normal; margin-left: 4px; }
-.m-block .val.green { color: #67c23a; }
-.m-block .val.red { color: #f56c6c; }
+/* 中国市场习惯:涨红跌绿 */
+.m-block .val.green { color: #ef232a; }   /* 浮盈/总盈=红 */
+.m-block .val.red { color: #14b066; }     /* 浮亏/总亏=绿 */
 .m-block .meta { font-size: 12px; color: #909399; }
-.m-block .meta .green { color: #67c23a; }
-.m-block .meta .red { color: #f56c6c; }
+.m-block .meta .green { color: #ef232a; }
+.m-block .meta .red { color: #14b066; }
 .m-block.profit { min-width: 180px; }
 .m-block.profit .val { font-size: 22px; }
 .m-block.stock { min-width: 180px; }
@@ -1060,14 +1217,67 @@ watch(() => session.value?.current_date, async () => {
 .equity-chart { width: 100%; height: 220px; }
 .chart-empty { padding: 60px 0; text-align: center; }
 .empty-hint { font-size: 12px; color: #909399; margin-top: 8px; line-height: 1.8; }
-.green { color: #67c23a; }
-.red { color: #f56c6c; }
+/* 中国市场习惯:涨红跌绿 */
+.green { color: #ef232a; }
+.red { color: #14b066; }
 .muted { color: #b4bcd0; }
 .estimated-qty { margin-top: 4px; font-size: 12px; color: #606266; }
 .preset-hint { font-size: 11px; color: #909399; margin-top: 4px; }
 
 /* ============ 响应式适配 ============ */
-/* 平板:md 以下(<992px)改成上下堆叠,横向滚动表格 */
+/* ============ 训练主区:布局相关 ============ */
+.trade-top, .trade-bottom { margin-top: 16px; }
+.trade-top > .el-col, .trade-bottom > .el-col { margin-bottom: 12px; }
+.trade-top > .el-col:last-child, .trade-bottom > .el-col:last-child { margin-bottom: 0; }
+
+/* K线图头部 */
+.chart-head-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.period-group { margin-left: 4px; }
+.bench-pick { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.bench-select { width: 180px; max-width: 100%; }
+
+/* 时间推进 */
+.advance-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.advance-row .advance-btn { flex: 1; min-width: 90px; }
+.advance-extra { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+
+/* 下单(右侧卡内,买入/卖出按股并排) */
+.trade-pane {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  align-items: start;
+}
+/* 紧凑模式:右侧栏(下单)较窄(<480px)时改为上下堆叠,避免字段挤压 */
+@media (max-width: 1399.98px) {
+  .trade-pane { grid-template-columns: 1fr; }
+}
+.trade-pane-col {
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 12px 14px;
+  background: #fafbfc;
+}
+.trade-pane-buy { border-color: rgba(239,35,42,.25); background: linear-gradient(180deg, #fff5f5 0%, #fafbfc 50%); }
+.trade-pane-sell { border-color: rgba(20,176,102,.25); background: linear-gradient(180deg, #f0fbf5 0%, #fafbfc 50%); }
+.trade-pane-header {
+  display: flex; align-items: center; gap: 6px;
+  font-weight: 600; font-size: 15px;
+  margin-bottom: 10px; padding-bottom: 8px;
+  border-bottom: 1px dashed #e4e7ed;
+}
+.trade-form :deep(.el-form-item) { margin-bottom: 12px; }
+.trade-form :deep(.el-form-item__label) { font-size: 12px; color: #606266; }
+.preset-radio { display: flex; flex-wrap: wrap; gap: 4px; }
+.preset-radio :deep(.el-radio-button) { margin-right: 0 !important; }
+.custom-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.custom-shares { width: 180px; max-width: 100%; }
+.custom-hint { color: #909399; font-size: 12px; }
+.trade-action { margin-top: 8px; }
+.full-width { width: 100%; }
+
+/* ============ 响应式适配 ============ */
+/* 平板(<992px):下单改为上下堆叠,周期按钮和对照指数换行 */
 @media (max-width: 991.98px) {
   .metric-row-1 .m-block { min-width: 45%; padding: 4px 8px; }
   .metric-row-2 { flex-direction: column; align-items: stretch; }
@@ -1075,9 +1285,11 @@ watch(() => session.value?.current_date, async () => {
   .action-block { justify-content: flex-start; }
   .action-block .el-button-group { display: flex; flex: 1; }
   .action-block .el-button-group .el-button { flex: 1; padding: 8px 4px; font-size: 12px; }
+  .trade-pane { grid-template-columns: 1fr !important; }
+  .bench-select { width: 160px; }
 }
 
-/* 手机:sm 以下(<768px) */
+/* 手机(<768px):所有表格/图表/按钮全宽 */
 @media (max-width: 767.98px) {
   .trade { padding: 0; }
   .metric-bar { padding: 10px 12px; }
@@ -1086,12 +1298,16 @@ watch(() => session.value?.current_date, async () => {
   .m-block .val { font-size: 16px; }
   .m-block.profit .val { font-size: 18px; }
   .page-card { padding: 8px 10px; border-radius: 4px; }
-  .chart-head { gap: 4px; }
+  .chart-head { gap: 6px; }
   .chart-head .t { font-size: 13px; }
   .chart-head .hint { font-size: 11px; }
   .kline-chart { height: 60vh; min-height: 320px; }
   .progress-text { font-size: 11px; flex-wrap: wrap; gap: 4px; }
   .progress-hint { font-size: 11px; }
+  .trade-pane-col { padding: 10px 12px; }
+  .trade-pane-header { font-size: 14px; }
+  .preset-radio :deep(.el-radio-button__inner) { padding: 6px 8px; font-size: 12px; }
+  .bench-select { width: 100%; }
   /* 表格在窄屏允许横向滚动 */
   .page-card :deep(.el-table) { font-size: 12px; }
   .page-card :deep(.el-table .cell) { padding: 0 4px; }

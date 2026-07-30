@@ -33,19 +33,19 @@
 
         <el-divider content-position="left">资金 & 交易规则</el-divider>
         <el-row :gutter="16">
-          <el-col :span="8">
-            <el-form-item label="初始资金">
-              <el-input-number v-model="form.initial_cash" :min="10000" :step="10000" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="每次买入金额">
-              <el-input-number v-model="form.per_trade_amount" :min="1000" :step="10000" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="分仓 (仓位最大数)">
-              <el-input-number v-model="form.max_positions" :min="1" :max="20" />
+          <el-col :span="24">
+            <el-form-item label="初始资金 (元)">
+              <el-input-number
+                v-model="form.initial_cash"
+                :min="1000"
+                :step="10000"
+                :max="maxInitialCash"
+                style="max-width: 240px;"
+              />
+              <span class="hint">
+                可调整,上限 = 钱包余额 − ¥10 训练费余量 ·
+                当前上限 <b>¥ {{ money(maxInitialCash) }}</b>
+              </span>
             </el-form-item>
           </el-col>
         </el-row>
@@ -79,12 +79,6 @@
 
         <el-divider content-position="left">股票范围</el-divider>
         <el-row :gutter="16">
-          <el-col :span="6">
-            <el-form-item label="允许分仓">
-              <el-switch v-model="form.allow_split" />
-              <span class="hint">开启后允许持仓多只股票</span>
-            </el-form-item>
-          </el-col>
           <el-col :span="6">
             <el-form-item label="允许创业板 (30x)">
               <el-switch v-model="form.allow_chinext" />
@@ -221,14 +215,11 @@ const form = reactive({
   end_date: todayLocal(),
   // 与后端 TrainingSetupRequest 默认值保持一致:6 (后端 Field(6, ...))
   lookback_months: 6,
-  initial_cash: 1_000_000,
-  per_trade_amount: 100_000,
-  max_positions: 5,
+  initial_cash: 0,  // 由 wallet.balance - sessionCost 注入(后端同样会替换)
   commission_rate: 0.0003,
   min_commission: 5,
   stamp_tax: 0.001,
   transfer_fee: 0.00001,
-  allow_split: true,
   allow_chinext: false,
   allow_kcb: false,
   allow_bj: false,
@@ -249,9 +240,22 @@ watch(() => form.range_years, () => {
 // 训练费:固定 ¥100(utils/trainFee.js 与后端共享)
 const sessionCost = computed(() => calcSessionCost())
 
+// 上限 = 钱包余额 - ¥10 训练费余量(用户可调整,但不能超过此值)
+const maxInitialCash = computed(() => {
+  const w = Number(wallet.value?.balance || 0)
+  return Math.max(0, w - 10)
+})
+
+// 表单 initial_cash 默认填到上限
+watch(maxInitialCash, (v) => {
+  if (!form.initial_cash || form.initial_cash > v) {
+    form.initial_cash = v
+  }
+}, { immediate: true })
+
 const formValid = computed(() => {
   if (!form.range_years || form.range_years < 1) return false
-  if (form.initial_cash < 10_000) return false
+  if (form.initial_cash < 1000 || form.initial_cash > maxInitialCash.value) return false
   return true
 })
 
@@ -280,14 +284,11 @@ function reset() {
     range_years: 1,
     end_date: todayLocal(),
     lookback_months: 6,
-    initial_cash: 1_000_000,
-    per_trade_amount: 100_000,
-    max_positions: 5,
+    initial_cash: 0,
     commission_rate: 0.0003,
     min_commission: 5,
     stamp_tax: 0.001,
     transfer_fee: 0.00001,
-    allow_split: true,
     allow_chinext: false,
     allow_kcb: false,
     allow_bj: false,
@@ -311,6 +312,8 @@ async function start() {
   try {
     const payload = {
       ...form,
+      // 初始资金 = 用户编辑值(受 wallet-10 上限限制);后端会再次校验
+      initial_cash: Number(form.initial_cash || maxInitialCash.value),
       start_date: finalStart,
       end_date: form.end_date,
     }

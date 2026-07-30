@@ -23,7 +23,10 @@ from .types import TaskType
 # ============================================================
 class FetchAllParams(BaseModel):
     """全量拉取的参数。days_back / workers / adjust 与单任务对齐。"""
-    days_back: int = Field(365, ge=30, le=3650, description="K线回溯天数")
+    days_back: int = Field(
+        0, ge=0, le=3650,
+        description="K线回溯天数(0=自上市以来全量,>0=按天数回溯)",
+    )
     adjust: str = Field("qfq", description="复权方式 qfq/hfq")
     workers: int = Field(4, ge=1, le=16, description="K线并发线程数")
     skip_enrich: bool = Field(
@@ -92,11 +95,14 @@ class FetchAllUpdater(BaseUpdater):
             return result
         self._emit(progress_callback, stage="kline_daily", status="running")
         try:
+            # days_back=0 时按各自 list_date 拉取(自上市以来全量),否则按天数回溯
+            is_full = p.days_back == 0
             r3 = KlineDailyUpdater({
                 "mode": "full",
                 "adjust": p.adjust,
                 "days_back": p.days_back,
                 "workers": p.workers,
+                "since_list_date": is_full,
             }).run()
             result["stages"]["kline_daily"] = r3.get("stats", r3)
         except Exception as e:
@@ -136,6 +142,12 @@ class SyncLatestParams(BaseModel):
     codes: Optional[list[str]] = Field(None, description="限定股票代码,None=自动选缺失/过期")
     update_stock_list: bool = Field(
         True, description="是否顺便同步股票列表(增量更新新上市/退市)"
+    )
+    since_list_date: bool = Field(
+        False,
+        description=(
+            "True 时单股/批量按各自上市日期补全 K线(超出 days_back 部分按 days_back 上限截断)"
+        ),
     )
 
 
@@ -187,6 +199,7 @@ class SyncLatestUpdater(BaseUpdater):
                 "workers": p.workers,
                 "only_active": p.only_active,
                 "codes": p.codes,
+                "since_list_date": p.since_list_date,
             }).run()
             result["stages"]["kline_daily"] = r2.get("stats", r2)
         except Exception as e:

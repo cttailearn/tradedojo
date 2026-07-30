@@ -211,6 +211,28 @@ def _wallet_for_update(user_id: int) -> float:
     return float(row[0] or 0)
 
 
+def _wallet_for_update_in_conn(conn, user_id: int) -> float:
+    """在事务连接里读 wallet 余额,不存在则插入"""
+    row = conn.execute(
+        "SELECT balance FROM training_wallet WHERE user_id = ?", (user_id,),
+    ).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO training_wallet(user_id, balance) VALUES(?, 0)", (user_id,),
+        )
+        return 0.0
+    return float(row[0] or 0)
+
+
+def _wallet_balance(user_id: int) -> float:
+    """非事务读:返回当前钱包余额"""
+    row = query_one("SELECT balance FROM training_wallet WHERE user_id = ?", (user_id,))
+    if row is None:
+        execute("INSERT INTO training_wallet(user_id, balance) VALUES(?, 0)", (user_id,))
+        return 0.0
+    return float(row[0] or 0)
+
+
 def _build_session_view(session: dict) -> dict:
     """基于数据库拼装完整的会话视图(用于前端)"""
     sid = session["id"]
@@ -265,24 +287,14 @@ def _build_session_view(session: dict) -> dict:
                 if cur_price and avg_cost else 0,
         })
 
-    # 现金:初始资金 - 已支付金额 + 累计实现盈亏(从订单推断)
+    # 现金:与钱包共享(共用资金),直接读 wallet.balance
     orders = query_all(
         "SELECT id, trade_date, side, price, quantity, amount, "
         "       commission, stamp_tax, transfer_fee, total_fee, realized_pnl "
         "FROM training_order WHERE session_id = ? ORDER BY id DESC LIMIT 50",
         (sid,),
     )
-    paid_buy = query_one(
-        "SELECT COALESCE(SUM(amount+total_fee),0) FROM training_order "
-        "WHERE session_id = ? AND side = 'BUY'",
-        (sid,),
-    )[0] or 0
-    recv_sell = query_one(
-        "SELECT COALESCE(SUM(amount-total_fee),0) FROM training_order "
-        "WHERE session_id = ? AND side = 'SELL'",
-        (sid,),
-    )[0] or 0
-    cash = session["initial_cash"] - paid_buy + recv_sell
+    cash = _wallet_balance(user_id)
     total_equity = cash + market_value
 
     recent_orders = [{
@@ -382,8 +394,26 @@ def start_session(req: TrainingSetupRequest, request: Request, response: Respons
         ).fetchone()
         balance_after = float(balance_row[0] or 0)
 
-        # 随机选股
-        req_sub = TrainingSetupRequest(**req.model_dump())
+        # 训练可用资金上限 = 钱包余额 - 10 训练费余量
+        max_initial = max(0.0, balance_after - 10)
+        if req.initial_cash is None or req.initial_cash <= 0:
+            # 未提供则默认 = max_initial
+            session_initial_cash = max_initial
+        else:
+            if req.initial_cash > max_initial:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"初始资金 ¥ {req.initial_cash:.2f} 超过上限 ¥ {max_initial:.2f}"
+                        f"(钱包余额 − ¥10 训练费余量)"
+                    ),
+                )
+            session_initial_cash = float(req.initial_cash)
+
+        # 随机选股(使用后端确定的 initial_cash 覆盖入参,保持 _pick_random_stock 一致)
+        req_dict = req.model_dump()
+        req_dict["initial_cash"] = session_initial_cash
+        req_sub = TrainingSetupRequest(**req_dict)
         stock = _pick_random_stock(req_sub)
 
         # 初始揭示 = 训练开始日,但若 start_date 是节假日/周末没有 K 线,
@@ -406,18 +436,18 @@ def start_session(req: TrainingSetupRequest, request: Request, response: Respons
                 total_fee_paid, status, reveal_date
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)""",
             (user["id"], stock["code"], stock["name"], stock["industry"], stock["market"],
-             req.start_date, req.end_date, req.lookback_months, req.initial_cash,
+             req.start_date, req.end_date, req.lookback_months, session_initial_cash,
              req.commission_rate, req.min_commission, req.stamp_tax, req.transfer_fee,
              int(req.allow_split), req.max_positions, req.per_trade_amount,
              int(req.allow_chinext), int(req.allow_st), int(req.allow_kcb), int(req.allow_bj),
              session_cost, current_dt),
         )
         sid = cur.lastrowid
-        # 初始权益 = initial_cash
+        # 初始权益 = 钱包扣完训练费后的余额
         conn.execute(
             "INSERT INTO training_equity(session_id, trade_date, cash, market_value, total_equity) "
             "VALUES(?, ?, ?, 0, ?)",
-            (sid, current_dt, req.initial_cash, req.initial_cash),
+            (sid, current_dt, session_initial_cash, session_initial_cash),
         )
 
     # 重新读取
@@ -465,18 +495,8 @@ def advance(session_id: int, req: AdvanceRequest, request: Request, response: Re
         (new_current, sess["id"]),
     )
 
-    # 现金来自订单:对所有 BUY/SELL 在当前时刻的累加只与"订单"有关,不随时间变化
-    paid_buy = query_one(
-        "SELECT COALESCE(SUM(amount+total_fee),0) FROM training_order "
-        "WHERE session_id = ? AND side = 'BUY'",
-        (sess["id"],),
-    )[0] or 0
-    recv_sell = query_one(
-        "SELECT COALESCE(SUM(amount-total_fee),0) FROM training_order "
-        "WHERE session_id = ? AND side = 'SELL'",
-        (sess["id"],),
-    )[0] or 0
-    cash = sess["initial_cash"] - paid_buy + recv_sell
+    # 现金 = 当前钱包余额(共用资金)
+    cash = _wallet_balance(user["id"])
 
     # 一次拉所有持仓代码的 close 列(逐日 close),用于插每个揭示日的权益快照
     pos_codes = query_all(
@@ -628,31 +648,29 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
 
     with get_conn() as conn:
         if side == "BUY":
-            # 股数 = 金额 / 价格,按 100 取整
-            amount_budget = req.amount or sess["per_trade_amount"]
-            if amount_budget <= 0:
-                raise HTTPException(status_code=400, detail="买入金额必须 > 0")
-            qty = int(amount_budget // (price * 100)) * 100
-            if qty <= 0:
-                raise HTTPException(status_code=400, detail="金额不足以买入 1 手 (100 股)")
+            # 优先使用前端传入的 quantity(按股买入);若未给再退回金额推算
+            if req.quantity and req.quantity > 0:
+                qty = int(req.quantity // 100) * 100
+                if qty <= 0:
+                    raise HTTPException(status_code=400, detail="买入股数必须为 100 整数倍")
+            else:
+                amount_budget = req.amount or sess["per_trade_amount"]
+                if amount_budget <= 0:
+                    raise HTTPException(status_code=400, detail="买入金额必须 > 0")
+                qty = int(amount_budget // (price * 100)) * 100
+                if qty <= 0:
+                    raise HTTPException(status_code=400, detail="金额不足以买入 1 手 (100 股)")
             trade_amount = qty * price
             fees = _calc_total_fees(trade_amount, qty, sess, "BUY")
             total_pay = trade_amount + fees["total_fee"]
 
-            # 检查现金
-            paid_buy = conn.execute(
-                "SELECT COALESCE(SUM(amount+total_fee),0) FROM training_order "
-                "WHERE session_id = ? AND side = 'BUY'",
-                (sess["id"],),
-            ).fetchone()[0] or 0
-            recv_sell = conn.execute(
-                "SELECT COALESCE(SUM(amount-total_fee),0) FROM training_order "
-                "WHERE session_id = ? AND side = 'SELL'",
-                (sess["id"],),
-            ).fetchone()[0] or 0
-            cash = sess["initial_cash"] - paid_buy + recv_sell
+            # 现金 = 用户钱包余额(共用)
+            cash = _wallet_for_update_in_conn(conn, user["id"])
             if cash < total_pay:
-                raise HTTPException(status_code=400, detail=f"现金不足,可用 {cash:.2f} 元,需要 {total_pay:.2f}")
+                raise HTTPException(
+                    status_code=402,
+                    detail=f"现金不足,可用 {cash:.2f} 元,需要 {total_pay:.2f}",
+                )
 
             # 检查分仓
             pos_cnt = conn.execute(
@@ -666,7 +684,10 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
                     (sess["id"], sess["code"]),
                 ).fetchone()
                 if not exist:
-                    raise HTTPException(status_code=400, detail=f"已达最大持仓数 {sess['max_positions']}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"已达最大持仓数 {sess['max_positions']}",
+                    )
 
             # 写订单
             cur = conn.execute(
@@ -706,6 +727,15 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
                     "VALUES(?, ?, ?, ?, ?)",
                     (sess["id"], user["id"], sess["code"], qty, avg_cost_with_fee),
                 )
+
+            # 钱包扣款(共用资金):从 balance 扣 total_pay
+            conn.execute(
+                "UPDATE training_wallet "
+                "SET balance = balance - ?, total_spent = total_spent + ?, "
+                "    updated_at = datetime('now','localtime') "
+                "WHERE user_id = ? AND balance >= ?",
+                (total_pay, total_pay, user["id"], total_pay),
+            )
 
         else:  # SELL
             if not req.quantity or req.quantity <= 0:
@@ -749,6 +779,15 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
                     "WHERE session_id = ? AND code = ?",
                     (new_qty, sess["id"], sess["code"]),
                 )
+
+            # 钱包加款(共用资金):实际收到 trade_amount - total_fee
+            net_recv = trade_amount - fees["total_fee"]
+            conn.execute(
+                "UPDATE training_wallet "
+                "SET balance = balance + ?, updated_at = datetime('now','localtime') "
+                "WHERE user_id = ?",
+                (net_recv, user["id"]),
+            )
 
     # 返回最新视图
     updated_sess = _session_for_user(user["id"], session_id)

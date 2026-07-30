@@ -200,33 +200,43 @@ class ParallelKlineUpdater:
         only_active: bool = True,
         days_back: int = None,
         codes: list = None,
+        since_list_date: bool = False,
     ) -> dict:
         """
         并行更新所有股票 K线
         :param codes: 指定仅更新这些代码;为 None 时处理全部
+        :param since_list_date: True 时按每只股票各自的 list_date 决定起始日(忽略 days_back)
         :return: 统计字典
         """
-        days_back = days_back or FetchConfig.DEFAULT_DAYS_BACK
+        # days_back=0 保持原样(0 表示全量自上市以来),仅在 None 时回退默认值
+        if days_back is None:
+            days_back = FetchConfig.DEFAULT_DAYS_BACK
 
         # 1. 获取股票列表
         with get_conn() as conn:
             if codes:
                 # 限定到指定代码(单股/批量)
                 placeholders = ",".join(["?"] * len(codes))
-                sql = f"SELECT code, name FROM stock_list WHERE code IN ({placeholders})"
+                sql = (
+                    f"SELECT code, name, list_date "
+                    f"FROM stock_list WHERE code IN ({placeholders})"
+                )
                 if only_active:
                     sql += " AND is_active = 1"
                 all_stocks = conn.execute(sql, list(codes)).fetchall()
             else:
-                sql = "SELECT code, name FROM stock_list"
+                sql = "SELECT code, name, list_date FROM stock_list"
                 if only_active:
                     sql += " WHERE is_active = 1"
                 all_stocks = conn.execute(sql).fetchall()
-        logger.info(f"[目标] {len(all_stocks)} 只股票,复权={adjust},回溯 {days_back} 天"
-                    f"{' (限定 codes)' if codes else ''}")
+        logger.info(
+            f"[目标] {len(all_stocks)} 只股票,复权={adjust},回溯 {days_back} 天"
+            f"{' (限定 codes)' if codes else ''}"
+            f"{' · 自上市起' if since_list_date else ''}"
+        )
 
         # 2. 过滤待处理
-        todo = [(c, n) for c, n in all_stocks if self.checkpoint.need_retry(c)]
+        todo = [(c, n, ld) for c, n, ld in all_stocks if self.checkpoint.need_retry(c)]
         skipped = len(all_stocks) - len(todo)
         logger.info(
             f"[计划] 待处理 {len(todo)} 只,跳过 {skipped} 只已完成"
@@ -243,16 +253,40 @@ class ParallelKlineUpdater:
 
         # 4. 并行拉取
         end = datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        today = datetime.now()
+
+        def _resolve_start(list_date_raw: str, fallback_days: int) -> str:
+            """根据 list_date 推导每只股的拉取起点;若 list_date 不可用则回退到 days_back。"""
+            if list_date_raw and len(list_date_raw) >= 10:
+                ld_str = list_date_raw[:10]
+                try:
+                    ld = datetime.strptime(ld_str, "%Y-%m-%d")
+                    # 上限:不超过 today;下限:fallback_days=0 表示不截断(全量自上市以来)
+                    delta_days = (today - ld).days
+                    if delta_days < 0:
+                        return end
+                    if fallback_days and delta_days > fallback_days:
+                        return (today - timedelta(days=fallback_days)).strftime("%Y-%m-%d")
+                    return ld_str
+                except ValueError:
+                    pass
+            if fallback_days:
+                return (today - timedelta(days=fallback_days)).strftime("%Y-%m-%d")
+            return end  # 全量(0):没有 list_date 时退到今天(即不拉)
 
         try:
             with ThreadPoolExecutor(
                 max_workers=self.max_workers, thread_name_prefix="Worker"
             ) as pool:
-                futures = {
-                    pool.submit(self._worker_task, c, n, start, end, adjust): (c, n)
-                    for c, n in todo
-                }
+                futures = {}
+                for code, name, list_date in todo:
+                    per_start = (
+                        _resolve_start(list_date, days_back)
+                        if since_list_date else start
+                    )
+                    futures[pool.submit(
+                        self._worker_task, code, name, per_start, end, adjust
+                    )] = (code, name)
                 done = 0
                 for fut in as_completed(futures):
                     if self.interrupted:
@@ -995,9 +1029,11 @@ class ParallelKlineUpdater:
         adjust: str = "qfq",
         days_back: int = 10,
         codes: list = None,
+        since_list_date: bool = False,
     ) -> dict:
         """仅对缺失/过期的股票更新日K线
         :param codes: 限定到这些代码;为 None 时处理所有缺失/过期
+        :param since_list_date: 是否按 list_date 拉取单股历史
         """
         report = self.check_missing()
         missing = report['kline_daily']['missing_stocks']
@@ -1025,4 +1061,7 @@ class ParallelKlineUpdater:
         cp.save_snapshot()
         print(f"  重置 {len(missing) + len(outdated)} 只股票断点")
 
-        return self.update_all(adjust=adjust, days_back=days_back, codes=codes)
+        return self.update_all(
+            adjust=adjust, days_back=days_back, codes=codes,
+            since_list_date=since_list_date,
+        )

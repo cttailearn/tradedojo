@@ -54,7 +54,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useTrainAuthStore } from '@/stores/trainAuth'
@@ -64,14 +64,8 @@ const auth = useTrainAuthStore()
 const router = useRouter()
 const route = useRoute()
 const activeMenu = computed(() => '/' + (route.path.split('/').slice(0, 3).join('/')))
-const wallet = reactive({ balance: 0, total_spent: 0, total_topup: 0 })
-
-async function refreshWallet() {
-  try {
-    const w = await trainApi.wallet()
-    Object.assign(wallet, w || {})
-  } catch {}
-}
+const wallet = computed(() => auth.wallet)
+let walletTimer = null
 
 function money(v) {
   return Number(v || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -82,6 +76,20 @@ async function onCommand(cmd) {
     auth.clear()
     ElMessage.success('已退出')
     router.replace('/')
+  }
+}
+
+function startWalletPolling() {
+  if (walletTimer) return
+  // 立即拉一次,然后每 8 秒同步一次,确保下单 / 推进 / 充值后右上角能反映
+  auth.refreshWallet()
+  walletTimer = setInterval(() => auth.refreshWallet(), 8000)
+}
+
+function stopWalletPolling() {
+  if (walletTimer) {
+    clearInterval(walletTimer)
+    walletTimer = null
   }
 }
 
@@ -96,14 +104,26 @@ onMounted(async () => {
         last_login: me.last_login,
       }
     }
-    Object.assign(wallet, me?.wallet || {})
+    if (me?.wallet) {
+      auth.wallet = { ...auth.wallet, ...me.wallet }
+    } else if (me?.wallet_balance != null) {
+      auth.wallet = {
+        ...auth.wallet,
+        balance: Number(me.wallet_balance || 0),
+      }
+    }
+    startWalletPolling()
   } catch {
     auth.clear()
     router.push('/')
   }
 })
 
-defineExpose({ refreshWallet })
+onUnmounted(() => {
+  stopWalletPolling()
+})
+
+defineExpose({ refreshWallet: () => auth.refreshWallet() })
 // 暴露给子页面(Setup / Trade)调用的刷新函数
 </script>
 

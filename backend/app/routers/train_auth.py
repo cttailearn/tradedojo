@@ -279,6 +279,11 @@ def me(user: dict = Depends(get_current_train_user)):
         "created_at": row[2],
         "last_login": row[3],
         "wallet_balance": balance_val,
+        "wallet": {
+            "balance": balance_val,
+            "total_spent": 0.0,
+            "total_topup": 0.0,
+        },
     }
 
 

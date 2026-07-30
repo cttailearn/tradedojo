@@ -23,7 +23,8 @@ class KlineDailyParams(BaseModel):
         "qfq", description="复权方式"
     )
     days_back: int = Field(
-        365, ge=1, le=3650, description="回溯天数"
+        0, ge=0, le=3650,
+        description="回溯天数(0=自上市以来全量,>0=按天数回溯)",
     )
     only_active: bool = Field(
         True, description="是否只处理 is_active=1 的股票"
@@ -33,6 +34,12 @@ class KlineDailyParams(BaseModel):
     )
     codes: Optional[list[str]] = Field(
         None, description="限定到指定代码(单股/批量),None=全部"
+    )
+    since_list_date: bool = Field(
+        False,
+        description=(
+            "True 时按每只股票各自的 list_date 拉取(days_back=0 时不截断)"
+        ),
     )
 
 
@@ -57,6 +64,7 @@ class KlineDailyUpdater(BaseUpdater):
             stats = u.update_daily_smart_only(
                 adjust=p.adjust or "qfq", days_back=p.days_back,
                 codes=p.codes,
+                since_list_date=p.since_list_date,
             )
         else:
             stats = u.update_all(
@@ -64,6 +72,7 @@ class KlineDailyUpdater(BaseUpdater):
                 days_back=p.days_back,
                 only_active=p.only_active,
                 codes=p.codes,
+                since_list_date=p.since_list_date,
             )
 
         result = {

@@ -210,19 +210,18 @@
       </div>
 
       <div class="kline-chart-wrapper" v-loading="klineLoading">
-        <div ref="klineChartRef" class="kline-chart">
-          <div v-if="!klineLoading && !klineList.length" class="kline-empty">
-            <el-icon size="32" color="#c0c4cc"><DocumentRemove /></el-icon>
-            <p>暂无 K 线数据</p>
-            <p class="kline-empty-tip">
-              可能原因:1) 该股票尚未拉取 K线;
-              2) 拉取任务失败或未完成。<br/>
-              请到「任务管理」执行增量同步或拉取数据。
-            </p>
-            <el-button type="primary" plain size="small" @click="triggerFetchOne">
-              <el-icon><Download /></el-icon>立即拉取此股 K线
-            </el-button>
-          </div>
+        <div ref="klineChartRef" class="kline-chart"></div>
+        <div v-if="!klineLoading && !klineList.length" class="kline-empty">
+          <el-icon size="32" color="#c0c4cc"><DocumentRemove /></el-icon>
+          <p>暂无 K 线数据</p>
+          <p class="kline-empty-tip">
+            可能原因:1) 该股票尚未拉取 K线;
+            2) 拉取任务失败或未完成。<br/>
+            请到「任务管理」执行增量同步或拉取数据。
+          </p>
+          <el-button type="primary" plain size="small" :loading="fetchingOne" @click="triggerFetchOne">
+            <el-icon><Download /></el-icon>{{ fetchingOne ? fetchProgressText : '立即拉取此股 K线' }}
+          </el-button>
         </div>
       </div>
 
@@ -305,6 +304,8 @@ const klineForm = reactive({
 const klineList = ref([])
 const klineTotal = ref(0)
 const klineLoading = ref(false)
+const fetchingOne = ref(false)
+const fetchProgressText = ref('正在拉取...')
 const klineChartRef = ref(null)
 let klineChart = null
 const klineTitle = computed(() => klineForm.code
@@ -381,28 +382,59 @@ function goKline(code, name) {
 }
 
 // 在 K线 dialog 里直接触发单股拉取(走新的 sync_latest 入口)
-let _refreshTimer = null
+let _fetchPollToken = 0
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+
+async function pollFetchTask(taskId, token) {
+  const deadline = Date.now() + 5 * 60 * 1000
+  while (token === _fetchPollToken && Date.now() < deadline) {
+    await wait(1500)
+    if (token !== _fetchPollToken) return null
+    const task = await tasksApi.status(taskId)
+    if (task.status === 'success') return task
+    if (task.status === 'failed') {
+      throw new Error(task.message || 'K线拉取任务失败')
+    }
+    const stage = task.progress?.stage
+    fetchProgressText.value = stage === 'stock_list' ? '正在同步股票列表...'
+      : stage === 'kline_daily' ? '正在拉取K线...'
+        : stage === 'index_daily' ? '正在同步指数...'
+          : '正在准备拉取...'
+  }
+  if (token === _fetchPollToken) throw new Error('K线拉取超时，请到数据任务页面查看任务状态')
+  return null
+}
+
 async function triggerFetchOne() {
-  if (!klineForm.code) return
+  if (!klineForm.code || fetchingOne.value) return
+  const code = klineForm.code
+  const token = ++_fetchPollToken
+  fetchingOne.value = true
+  fetchProgressText.value = '正在提交...'
   try {
-    await tasksApi.trigger({
+    const result = await tasksApi.trigger({
       task: 'sync_latest',
       params: {
-        days_back: 365,
+        days_back: 120,
         adjust: klineForm.adjust,
         workers: 2,
-        codes: [klineForm.code],
+        codes: [code],
+        update_stock_list: false,
+        since_list_date: true,
       },
     })
-    ElMessage.success(`已提交 ${klineForm.code} 的 K线拉取任务`)
-    // 60 秒后自动刷新一次(清理上一次的 timer,避免叠加)
-    if (_refreshTimer) clearTimeout(_refreshTimer)
-    _refreshTimer = setTimeout(() => {
-      _refreshTimer = null
-      if (klineVisible.value) loadKline()
-    }, 60000)
+    fetchProgressText.value = '正在准备拉取...'
+    ElMessage.success(`已提交 ${code} 的 K线拉取任务`)
+    const task = await pollFetchTask(result.task_id, token)
+    if (task && token === _fetchPollToken) {
+      await loadKline(1)
+      ElMessage.success(`${code} 的 K线已更新`)
+      load()
+    }
   } catch (e) {
-    ElMessage.error(e.message)
+    if (token === _fetchPollToken) ElMessage.error(e.message || 'K线拉取失败')
+  } finally {
+    if (token === _fetchPollToken) fetchingOne.value = false
   }
 }
 
@@ -572,6 +604,8 @@ function exportKlineCsv() {
 }
 
 function onKlineClosed() {
+  _fetchPollToken += 1
+  fetchingOne.value = false
   if (klineChart) {
     klineChart.dispose()
     klineChart = null
@@ -623,8 +657,9 @@ async function rowAction(cmd, row) {
     await tasksApi.trigger({
       task: 'sync_latest',
       params: {
-        days_back: 365, adjust: 'qfq',
+        days_back: 120, adjust: 'qfq',
         workers: 2, codes: [row.code],
+        since_list_date: true,
       },
     })
     ElMessage.success(`已提交 [${row.code}] K线更新任务`)
@@ -650,8 +685,9 @@ async function batchUpdateKline() {
     await tasksApi.trigger({
       task: 'sync_latest',
       params: {
-        days_back: 365, adjust: 'qfq',
+        days_back: 120, adjust: 'qfq',
         workers: 4, codes,
+        since_list_date: true,
       },
     })
     ElMessage.success(`已提交批量 K线更新 (${codes.length} 只)`)
@@ -680,10 +716,7 @@ function klineResize() {
 
 onUnmounted(() => {
   window.removeEventListener('resize', klineResize)
-  if (_refreshTimer) {
-    clearTimeout(_refreshTimer)
-    _refreshTimer = null
-  }
+  _fetchPollToken += 1
   if (klineChart) {
     try { klineChart.dispose() } catch {}
     klineChart = null
