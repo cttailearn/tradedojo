@@ -19,6 +19,17 @@
         </el-menu>
       </div>
       <div class="user-box">
+        <!-- 2026-07-31 P2-1: 暗色模式切换 -->
+        <el-tooltip :content="theme.isDark ? '切换浅色' : '切换深色'" placement="bottom">
+          <el-button
+            text circle size="default"
+            @click="theme.toggle()"
+            class="theme-toggle"
+          >
+            <el-icon v-if="theme.isDark"><Sunny /></el-icon>
+            <el-icon v-else><Moon /></el-icon>
+          </el-button>
+        </el-tooltip>
         <el-tag size="small" type="warning" effect="dark" round>
           ¥ {{ money(wallet.balance) }}
         </el-tag>
@@ -58,9 +69,11 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useTrainAuthStore } from '@/stores/trainAuth'
+import { useThemeStore } from '@/stores/theme'  // 2026-07-31 P2-1
 import { trainApi } from '@/api/modules'
 
 const auth = useTrainAuthStore()
+const theme = useThemeStore()
 const router = useRouter()
 const route = useRoute()
 const activeMenu = computed(() => '/' + (route.path.split('/').slice(0, 3).join('/')))
@@ -73,6 +86,8 @@ function money(v) {
 
 async function onCommand(cmd) {
   if (cmd === 'logout') {
+    // 2026-07-31 P0-1 修复: 调后端 logout 清 cookie + 吊销 token
+    try { await trainApi.logout() } catch (_) { /* 容忍失败,本地清 state 即可 */ }
     auth.clear()
     ElMessage.success('已退出')
     router.replace('/')

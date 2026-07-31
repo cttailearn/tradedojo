@@ -66,6 +66,12 @@
           </el-breadcrumb>
         </div>
         <div class="header-right">
+          <el-tooltip :content="theme.isDark ? '切换浅色' : '切换深色'" placement="bottom">
+            <el-button text circle size="default" @click="theme.toggle()">
+              <el-icon v-if="theme.isDark"><Sunny /></el-icon>
+              <el-icon v-else><Moon /></el-icon>
+            </el-button>
+          </el-tooltip>
           <el-tag size="small" type="success">在线</el-tag>
           <el-dropdown @command="onCommand">
             <span class="user-info">
@@ -119,10 +125,12 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'  // 2026-07-31 P2-1
 import { authApi } from '@/api/modules'
 
 const router = useRouter()
 const route = useRoute()
+const theme = useThemeStore()
 const auth = useAuthStore()
 
 const collapsed = ref(false)

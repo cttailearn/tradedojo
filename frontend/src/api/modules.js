@@ -77,10 +77,12 @@ export const kronosApi = {
 // 训练端(用户端 K 线交易训练)
 // ==========================================
 export const trainApi = {
-  // 注册 / 登录
+  // 注册 / 登录 / 登出 / refresh (2026-07-31 P0-1 改 cookie 模式)
   register: (username, password, display_name) =>
     api.post('/train/register', { username, password, display_name }),
   login: (username, password) => api.post('/train/login', { username, password }),
+  logout: () => api.post('/train/logout'),
+  refresh: () => api.post('/train/refresh'),
   me: () => api.get('/train/me'),
   wallet: () => api.get('/train/wallet'),
   redeem: (code) => api.post('/train/redeem', { code }),
@@ -94,6 +96,12 @@ export const trainApi = {
   trade: (id, payload) => api.post(`/train/sessions/${id}/trade`, payload),
   advance: (id, days = 1) => api.post(`/train/sessions/${id}/advance`, { days }),
   finish: (id) => api.post(`/train/sessions/${id}/finish`),
+  rollback: (id) => api.post(`/train/sessions/${id}/rollback`),
+  signals: (id) => api.get(`/train/sessions/${id}/signals`),
+  attribution: (id) => api.get(`/train/sessions/${id}/attribution`),
+  benchmark: (id) => api.get(`/train/sessions/${id}/benchmark`),
+  leaderboard: (params = {}) => api.get('/train/stats/leaderboard', { params }),
+  sessionStats: (id) => api.get(`/train/stats/session/${id}`),
 
   // 交割单统计 & 行为分析
   statsOverview: () => api.get('/train/stats/overview'),

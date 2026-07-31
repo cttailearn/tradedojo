@@ -15,7 +15,12 @@ import './styles/main.css'
 
 const app = createApp(App)
 
-// 注册所有 Element Plus 图标
+// 2026-07-31 P2-1: 暗色模式初始化
+const savedTheme = localStorage.getItem('app_theme') || 'light'
+if (savedTheme === 'dark') {
+  document.documentElement.classList.add('dark')
+}
+
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component)
 }

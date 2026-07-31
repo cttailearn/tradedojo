@@ -6,6 +6,13 @@
         <el-button @click="$router.push(`/train/trade/${sessionId}`)">
           <el-icon><ArrowLeft /></el-icon>返回训练
         </el-button>
+        <!-- 2026-07-31 P1-6: 导出 PNG -->
+        <el-button type="primary" plain @click="exportPNG" :loading="exporting">
+          <el-icon><Picture /></el-icon>导出 PNG
+        </el-button>
+        <el-button @click="exportCSV" :loading="exporting">
+          <el-icon><Download /></el-icon>导出 CSV
+        </el-button>
       </div>
     </div>
 
@@ -59,6 +66,46 @@
             <div class="stat-value">{{ m.value }}</div>
             <div class="stat-sub" v-if="m.sub">{{ m.sub }}</div>
           </div>
+        </div>
+      </el-col>
+    </el-row>
+
+    <!-- 2026-07-31 P0-2: 风险指标 (后端算的 sharpe/sortino/calmar/max_drawdown) -->
+    <el-row :gutter="16" v-if="stats.riskMetrics" class="risk-row">
+      <el-col :span="6">
+        <div class="stat-card risk-card">
+          <div class="lbl">最大回撤</div>
+          <div class="val" :class="stats.riskMetrics.max_drawdown >= 15 ? 'red' : 'green'">
+            {{ stats.riskMetrics.max_drawdown }}%
+          </div>
+          <div class="hint">持续 {{ stats.riskMetrics.max_drawdown_days }} 天</div>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="stat-card risk-card">
+          <div class="lbl">夏普比率</div>
+          <div class="val">
+            {{ stats.riskMetrics.sharpe_ratio ?? '-' }}
+          </div>
+          <div class="hint">无风险利率 3%</div>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="stat-card risk-card">
+          <div class="lbl">卡玛比率</div>
+          <div class="val">
+            {{ stats.riskMetrics.calmar_ratio ?? '-' }}
+          </div>
+          <div class="hint">年化收益 / 最大回撤</div>
+        </div>
+      </el-col>
+      <el-col :span="6">
+        <div class="stat-card risk-card">
+          <div class="lbl">年化收益 / 波动</div>
+          <div class="val">
+            {{ stats.riskMetrics.annual_return }}% / {{ stats.riskMetrics.annual_volatility }}%
+          </div>
+          <div class="hint">索提诺 {{ stats.riskMetrics.sortino_ratio ?? '-' }}</div>
         </div>
       </el-col>
     </el-row>
@@ -204,6 +251,63 @@ const loading = ref(false)
 const session = ref(null)
 const trades = ref([])
 const equity = ref([])
+const sessionStats = ref(null)  // 2026-07-31 P0-2: 后端高级统计
+const exporting = ref(false)  // 2026-07-31 P1-6
+
+// 2026-07-31 P1-6: 导出 PNG
+async function exportPNG() {
+  if (!session.value) return
+  exporting.value = true
+  try {
+    const html2canvas = (await import('html2canvas')).default
+    const target = document.querySelector('.report')
+    if (!target) { ElMessage.error('找不到报告内容'); return }
+    const canvas = await html2canvas(target, {
+      backgroundColor: '#fff',
+      scale: 2,
+      logging: false,
+      useCORS: true,
+    })
+    const link = document.createElement('a')
+    link.download = `训练报告_${session.value.code || 'report'}_${Date.now()}.png`
+    link.href = canvas.toDataURL('image/png')
+    link.click()
+    ElMessage.success('PNG 已下载')
+  } catch (e) {
+    ElMessage.error('导出 PNG 失败: ' + (e.message || '未知错误'))
+  } finally {
+    exporting.value = false
+  }
+}
+
+// 2026-07-31 P1-6: 导出 CSV (成交明细)
+function exportCSV() {
+  if (!trades.value || !trades.value.length) {
+    ElMessage.warning('无成交数据可导出')
+    return
+  }
+  const rows = [['日期', '方向', '价格', '股数', '金额', '手续费', '实现盈亏']]
+  trades.value.forEach((t) => {
+    rows.push([
+      t.date?.slice(0, 10) || '',
+      t.side === 'buy' ? '买入' : '卖出',
+      t.price || 0,
+      t.qty || 0,
+      t.amount || 0,
+      t.fee || 0,
+      t.realized_pnl != null ? t.realized_pnl : '',
+    ])
+  })
+  const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
+  // 加 BOM 让 Excel 识别 UTF-8
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
+  const link = document.createElement('a')
+  link.download = `成交明细_${session.value?.code || 'trades'}_${Date.now()}.csv`
+  link.href = URL.createObjectURL(blob)
+  link.click()
+  URL.revokeObjectURL(link.href)
+  ElMessage.success('CSV 已下载')
+}
 
 function money(v) {
   return Number(v || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -212,17 +316,38 @@ function money(v) {
 const totalPnl = computed(() => session.value?.total_pnl || 0)
 const totalPnlPct = computed(() => session.value?.total_pnl_pct || 0)
 
-// 交易统计
+// 交易统计 (2026-07-31 P0-2: 优先用后端 stats API)
 const stats = computed(() => {
+  // 优先用 sessionStats.stats (后端算的胜率/盈亏比等)
+  if (sessionStats.value?.stats) {
+    return {
+      totalTrades: sessionStats.value.stats.total_buy + sessionStats.value.stats.total_sell,
+      buyCount: sessionStats.value.stats.total_buy,
+      sellCount: sessionStats.value.stats.total_sell,
+      winCount: sessionStats.value.stats.win_count,
+      lossCount: sessionStats.value.stats.loss_count,
+      winRate: sessionStats.value.stats.win_rate,
+      maxWin: sessionStats.value.round_trips?.length
+        ? Math.max(...sessionStats.value.round_trips.map(t => t.realized_pnl || 0))
+        : 0,
+      maxLoss: sessionStats.value.round_trips?.length
+        ? Math.min(...sessionStats.value.round_trips.map(t => t.realized_pnl || 0))
+        : 0,
+      profitFactor: sessionStats.value.stats.profit_factor || 0,
+      totalFee: sessionStats.value.stats.total_fees,
+      tradeDetails: trades.value || [],
+      // 2026-07-31 P0-2 风险指标
+      riskMetrics: sessionStats.value.risk_metrics || null,
+    }
+  }
+  // 兜底: 本地算
   const list = trades.value || []
   const sellTrades = list.filter(t => t.side === 'sell' && t.realized_pnl != null)
   const wins = sellTrades.filter(t => t.realized_pnl > 0)
   const losses = sellTrades.filter(t => t.realized_pnl < 0)
-
   const totalWin = wins.reduce((a, b) => a + (b.realized_pnl || 0), 0)
   const totalLoss = Math.abs(losses.reduce((a, b) => a + (b.realized_pnl || 0), 0))
   const totalFee = list.reduce((a, b) => a + (b.fee || 0), 0)
-
   return {
     totalTrades: list.length,
     buyCount: list.filter(t => t.side === 'buy').length,
@@ -235,6 +360,7 @@ const stats = computed(() => {
     profitFactor: totalLoss > 0 ? totalWin / totalLoss : (totalWin > 0 ? 999 : 0),
     totalFee,
     tradeDetails: [...list].sort((a, b) => (a.date || '').localeCompare(b.date || '')),
+    riskMetrics: null,
   }
 })
 
@@ -386,15 +512,13 @@ function computeMaxDrawdown() {
 async function load() {
   loading.value = true
   try {
-    const [sess, tradeData, eqData] = await Promise.all([
+    const [sess, statsData, eqData] = await Promise.all([
       trainApi.session(sessionId),
-      trainApi.session(sessionId).then(() => {
-        // 通过 session 数据获取 trades（如果API支持）
-        return []
-      }).catch(() => []),
+      trainApi.sessionStats(sessionId).catch(() => null),  // 2026-07-31 P0-2
       trainApi.equity(sessionId).catch(() => []),
     ])
     session.value = sess
+    sessionStats.value = statsData  // 2026-07-31 P0-2
 
     // 尝试从 session 获取 trades
     if (sess.trades) {

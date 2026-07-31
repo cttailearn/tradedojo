@@ -7,6 +7,20 @@
         <el-button type="primary" size="large" @click="$router.push('/train/setup')">
           <el-icon><Plus /></el-icon>发起一次训练
         </el-button>
+        <!-- 2026-07-31 P1-7: 快捷入口 -->
+        <div v-if="lastFinishedSession" class="hero-shortcuts">
+          <span class="hint">上次训练:</span>
+          <strong>{{ lastFinishedSession.name }} ({{ lastFinishedSession.code }})</strong>
+          <span :class="lastFinishedSession.total_pnl >= 0 ? 'green' : 'red'">
+            {{ lastFinishedSession.total_pnl >= 0 ? '+' : '' }}¥{{ money(lastFinishedSession.total_pnl) }}
+          </span>
+          <el-button size="small" type="primary" plain @click="$router.push(`/train/report/${lastFinishedSession.id}`)">
+            <el-icon><Document /></el-icon>查看报告
+          </el-button>
+          <el-button size="small" @click="quickRestart">
+            <el-icon><RefreshRight /></el-icon>再来一局
+          </el-button>
+        </div>
       </div>
 
       <el-row :gutter="16" style="margin-top: 24px;">
@@ -21,9 +35,9 @@
         </el-col>
         <el-col :span="6">
           <div class="metric-card muted-card">
-            <div class="lbl">累计消耗</div>
+            <div class="lbl">累计交易消耗</div>
             <div class="value">¥ {{ money(wallet.total_spent) }}</div>
-            <div class="lbl-hint">从余额里扣的训练费</div>
+            <div class="lbl-hint">买入手续费/印花税/过户费合计</div>
           </div>
         </el-col>
         <el-col :span="6">
@@ -111,6 +125,22 @@ const statusFilter = ref('all')
 
 const activeCount = computed(() => sessions.value.filter((x) => x.status === 'active').length)
 
+// 2026-07-31 P1-7: 上次训练记录
+const lastFinishedSession = computed(() => {
+  const fin = sessions.value.filter((x) => x.status === 'finished')
+    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+  return fin[0] || null
+})
+// 2026-07-31 P1-7: 上次训练设置
+const lastSetup = ref(null)
+async function quickRestart() {
+  // 复制上次训练设置(如果有)
+  if (lastSetup.value) {
+    sessionStorage.setItem('train_quick_setup', JSON.stringify(lastSetup.value))
+  }
+  router.push('/train/setup')
+}
+
 const filteredSessions = computed(() => {
   if (statusFilter.value === 'all') return sessions.value
   return sessions.value.filter((x) => x.status === statusFilter.value)
@@ -143,6 +173,13 @@ async function load() {
     ])
     sessions.value = list?.items || []
     wallet.value = w || {}
+    // 2026-07-31 P1-7: 拉上次训练设置给 quickRestart 用
+    if (lastFinishedSession.value) {
+      try {
+        const stats = await trainApi.sessionStats(lastFinishedSession.value.id)
+        lastSetup.value = stats?.session || null
+      } catch {}
+    }
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -170,6 +207,19 @@ onMounted(load)
   font-weight: var(--font-bold);
 }
 .muted { color: var(--text-secondary); margin: 0 0 var(--space-lg); }
+/* 2026-07-31 P1-7: 快捷入口 */
+.hero-shortcuts {
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: #f0f5ff;
+  border-radius: 6px;
+  display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap;
+}
+.hero-shortcuts .hint { color: #909399; font-size: 13px; }
+.hero-shortcuts strong { color: #303133; }
+.hero-shortcuts .green { color: #67c23a; font-weight: 600; }
+.hero-shortcuts .red { color: #f56c6c; font-weight: 600; }
 .page-card {
   background: var(--bg-card);
   padding: var(--space-2xl);
