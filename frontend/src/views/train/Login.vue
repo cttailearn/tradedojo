@@ -90,8 +90,9 @@ async function onLogin() {
   try {
     const data = await trainApi.login(form.username.trim(), form.password)
     const payload = data?.data ?? data
-    if (!payload?.access_token) throw new Error('登录响应缺少 token')
-    auth.setAuth(payload.access_token, {
+    // 2026-07-31 P0-1 修复: token 走 httpOnly cookie, 后端自动 set
+    // 前端只需要保存 user 标识用于 UI
+    auth.setUser({
       id: payload.user_id,
       username: payload.username,
       display_name: payload.display_name,
@@ -116,10 +117,24 @@ async function onRegister() {
   }
   loading.value = true
   try {
-    await trainApi.register(form.username.trim(), form.password, form.display_name || '')
-    ElMessage.success('注册成功,请登录')
-    mode.value = 'login'
-    form.password = ''
+    const data = await trainApi.register(form.username.trim(), form.password, form.display_name || '')
+    const payload = data?.data ?? data
+    // 2026-07-31 P0-1: 注册成功直接登录(token 已 set cookie)
+    if (payload?.user) {
+      auth.setUser({
+        id: payload.user.id,
+        username: payload.user.username,
+        display_name: payload.user.nickname,
+      })
+      ElMessage.success('注册成功,正在进入...')
+      const redirect = route.query.redirect || '/train/home'
+      router.replace(redirect)
+    } else {
+      // 旧 API 兼容
+      ElMessage.success('注册成功,请登录')
+      mode.value = 'login'
+      form.password = ''
+    }
   } catch (e) {
     ElMessage.error(e.message || '注册失败')
   } finally {

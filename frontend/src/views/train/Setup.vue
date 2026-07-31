@@ -43,7 +43,7 @@
                 style="max-width: 240px;"
               />
               <span class="hint">
-                可调整,上限 = 钱包余额 − ¥10 训练费余量 ·
+                可调整,上限 = 钱包余额(2026-07-31 起训练免费)·
                 当前上限 <b>¥ {{ money(maxInitialCash) }}</b>
               </span>
             </el-form-item>
@@ -237,13 +237,13 @@ watch(() => form.range_years, () => {
   previewStartDate.value = rollRandomStart(form.range_years, form.end_date)
 })
 
-// 训练费:固定 ¥100(utils/trainFee.js 与后端共享)
+// 训练费:已取消(2026-07-31 起,utils/trainFee.js 与后端共享,恒为 0)
 const sessionCost = computed(() => calcSessionCost())
 
-// 上限 = 钱包余额 - ¥10 训练费余量(用户可调整,但不能超过此值)
+// 上限 = 钱包余额(2026-07-31 起训练免费,不再保留训练费余量)
 const maxInitialCash = computed(() => {
   const w = Number(wallet.value?.balance || 0)
-  return Math.max(0, w - 10)
+  return Math.max(0, w)
 })
 
 // 表单 initial_cash 默认填到上限

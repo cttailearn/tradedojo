@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.config import settings
 from app.deps import require_admin
 from app.deps_train import _hash_pw
+from app.rate_limit import limiter
 from app.models import (
     AdminActionLogResponse,
     AdjustWalletRequest,
@@ -169,6 +170,7 @@ def get_user(user_id: int):
 
 
 @router.post("/users/{user_id}/set-active")
+@limiter.limit("20/minute")
 def set_user_active(
     user_id: int,
     payload: SetUserActiveRequest,
@@ -222,6 +224,7 @@ def set_user_active(
 
 
 @router.post("/users/{user_id}/reset-password")
+@limiter.limit("5/minute")
 def reset_user_password(
     user_id: int,
     payload: ResetUserPasswordRequest,
@@ -270,6 +273,7 @@ def reset_user_password(
 # 资金管理
 # =========================================================
 @router.post("/users/{user_id}/adjust-wallet")
+@limiter.limit("20/minute")
 def adjust_wallet(
     user_id: int,
     payload: AdjustWalletRequest,
@@ -455,6 +459,7 @@ def list_redeem_codes(
 
 
 @router.post("/redeem-codes")
+@limiter.limit("5/minute")
 def create_redeem_codes(
     payload: RedeemCodeCreateRequest,
     request: Request,
@@ -493,6 +498,7 @@ def create_redeem_codes(
 
 
 @router.post("/redeem-codes/{code}/revoke")
+@limiter.limit("20/minute")
 def revoke_redeem_code(
     code: str,
     payload: RevokeRedeemCodeRequest,

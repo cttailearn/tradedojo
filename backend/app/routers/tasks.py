@@ -1,4 +1,4 @@
-﻿"""
+"""
 后台数据更新任务路由 —— 已重构为按数据类型路由。
 旧 task 字符串("kline_daily" / "stock_list" / "index" / "enrich" / "daily_smart")
 通过 registry.resolve_task() 自动映射到新 TaskType,无需修改前端旧调用。
@@ -79,13 +79,45 @@ def list_recent_tasks(
     task_type: Optional[str] = Query(None, description="按任务类型过滤"),
     limit: int = Query(20, ge=1, le=100),
 ):
-    """按 task_type 过滤最近任务(供前端按 Tab 分组展示)"""
-    recs = task_manager.list_recent(limit=limit * 3)
+    """按 task_type 过滤最近任务(供前端按 Tab 分组展示)。
+
+    优先从 update_log 表读持久化历史(进程重启不丢);
+    内存中的活跃任务作为补充。
+    """
+    # 1) 持久化历史
+    persisted = task_manager.list_persisted(limit=limit, task_name=task_type)
+    # 2) 内存活跃任务(运行中/刚完成 30s 内的)
+    memory_recs = task_manager.list_recent(limit=limit * 3)
     if task_type:
-        recs = [r for r in recs if r["task_name"].startswith(f"{task_type}_")][:limit]
+        memory_recs = [r for r in memory_recs if r["task_name"].startswith(f"{task_type}_")][:limit]
     else:
-        recs = recs[:limit]
-    return {"items": recs}
+        memory_recs = memory_recs[:limit]
+
+    # 合并去重(以 task_id 优先,内存中的更"新")
+    by_id = {}
+    for r in persisted:
+        # 给持久化记录一个伪 id 用于前端去重(同 id 可能与内存重复)
+        by_id[f"db_{r['id']}"] = {
+            "task_id": f"db_{r['id']}",
+            "task_name": r["task_name"],
+            "status": r["status"],
+            "affected_rows": r["affected_rows"],
+            "started_at": r["started_at"],
+            "ended_at": r["ended_at"],
+            "message": r["message"],
+            "progress": {},
+            "log_tail": [],
+            "source": "update_log",
+        }
+    for r in memory_recs:
+        by_id[r["task_id"]] = {**r, "source": "memory"}
+    # 排序: started_at 降序
+    items = sorted(
+        by_id.values(),
+        key=lambda r: r.get("started_at") or "",
+        reverse=True,
+    )[:limit]
+    return {"items": items}
 
 
 # ---------- 断点重置 ----------

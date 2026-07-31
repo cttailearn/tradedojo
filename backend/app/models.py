@@ -197,6 +197,12 @@ class TrainingSetupRequest(BaseModel):
     industry: Optional[str] = None
     market: Optional[str] = None
     keyword: Optional[str] = None
+    # 2026-07-31 优化: 组合训练模式(P2-2)
+    is_portfolio: bool = Field(False, description="True=组合训练, 同时建 N 个独立 session 共享钱包")
+    portfolio_size: int = Field(5, ge=2, le=10, description="组合训练时股票数量")
+    # 2026-07-31 P2-3: 自动风控规则 (0=关闭)
+    auto_stop_loss_pct: float = Field(0, ge=0, le=0.5, description="自动止损比例 (e.g. 0.08)")
+    auto_take_profit_pct: float = Field(0, ge=0, le=1.0, description="自动止盈比例 (e.g. 0.20)")
 
 
 class TrainingSessionInfo(BaseModel):
@@ -226,6 +232,8 @@ class TradeOrderRequest(BaseModel):
     price: Optional[float] = Field(None, description="限价;为空时按当前收盘价撮合")
     quantity: Optional[int] = Field(None, description="卖出时必填;买入时为空表示按 per_trade_amount 下单")
     amount: Optional[float] = Field(None, description="买入时按金额计算股数(100的整数倍)")
+    pending: bool = Field(False, description="2026-07-31 限价单模式:true=挂单等待成交,false=立即以 open 价撮合")
+    pending_ttl: int = Field(20, ge=1, le=250, description="限价单过期天数(N 个交易日内未成交则自动撤单)")
 
 
 class AdvanceRequest(BaseModel):

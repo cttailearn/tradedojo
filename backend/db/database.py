@@ -163,6 +163,25 @@ def init_db(verbose: bool = True) -> None:
         ensure_col("stock_list", "industry_detail TEXT",         "industry_detail")
         ensure_col("stock_list", "last_enriched_at TEXT",        "last_enriched_at")
 
+        # 2026-07-31 P1-7: key-value 配置表(主源选择等持久化设置)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key         TEXT PRIMARY KEY,
+                value       TEXT NOT NULL,
+                updated_at  TEXT DEFAULT (datetime('now', 'localtime'))
+            );
+        """)
+
+        # 2026-07-31 P1-9: A 股交易日历(从指数 K线 推断)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS trading_calendar (
+                trade_date  TEXT PRIMARY KEY,
+                updated_at  TEXT DEFAULT (datetime('now', 'localtime'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_trading_calendar_date
+                ON trading_calendar(trade_date);
+        """)
+
         # 定时调度 job 配置表(每类数据一个 job,可独立启停/改 cron/改参数)
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS scheduler_job (
@@ -189,6 +208,10 @@ def init_db(verbose: bool = True) -> None:
         except Exception as e:
             print(f"[init_db] seed scheduler_job failed: {e}")
 
+        # 2026-07-31 P0-5: 调度器启动检测错过的 cron (必须在 scheduler_job 建表后)
+        ensure_col("scheduler_job", "last_missed_at TEXT",       "last_missed_at")
+        ensure_col("scheduler_job", "missed_count   INTEGER DEFAULT 0", "missed_count")
+
     # ---- user.db ----
     with get_user_conn() as conn:
         if user_sql:
@@ -207,6 +230,18 @@ def init_db(verbose: bool = True) -> None:
             )
         except Exception:
             pass
+        # 2026-07-31 优化: 限价单状态(P0-3)
+        ensure_col_u("training_order", "pending_status TEXT DEFAULT 'filled'", "pending_status")
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_order_pending "
+                "ON training_order(session_id, pending_status)"
+            )
+        except Exception:
+            pass
+        # 2026-07-31 P2-3: 训练风控规则
+        ensure_col_u("training_session", "auto_stop_loss_pct REAL DEFAULT 0", "auto_stop_loss_pct")
+        ensure_col_u("training_session", "auto_take_profit_pct REAL DEFAULT 0", "auto_take_profit_pct")
 
     if verbose:
         print(f"[DB] stock 数据库已初始化: {DB_PATH}")

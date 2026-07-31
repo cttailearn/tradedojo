@@ -49,11 +49,12 @@ function isWriteMethod(method) {
   return ['post', 'put', 'patch', 'delete'].includes(m)
 }
 
-// 请求拦截器: Bearer + CSRF
+// 请求拦截器: Bearer(管理端) + CSRF
+// 2026-07-31 P0-1 修复: 训练端已改 cookie 模式, 拦截器不再为 train 端加 Bearer
 api.interceptors.request.use((cfg) => {
   const url = cfg.url || ''
   // /train/admin/* 是管理员用的训练后台接口 → 走 admin token
-  // 其他 /train/* 是用户端 → 走 train token
+  // 其他 /train/* 是用户端 → 走 train cookie(自动, 不需要手动加)
   // 其余全部走 admin token (管理端 API)
   let store = null
   if (url.includes('/train/admin/')) {
@@ -63,12 +64,12 @@ api.interceptors.request.use((cfg) => {
   } else {
     store = useAuthStore()
   }
-  // 1. 优先用 store 里的 token 显式发 Bearer(header 可绕过 cookie-only 后端)
-  if (store?.token) {
+  // 1. 仅管理端显式加 Bearer(训练端已迁 cookie, 浏览器自动带 httpOnly cookie)
+  if (store === useAuthStore() && store?.token) {
     cfg.headers.Authorization = `Bearer ${store.token}`
   }
   // 2. 写操作时附加 CSRF header(双 cookie 模式,管理端)
-  //    训练端不发(后端训练 token 没绑 cookie,也不校验 CSRF)
+  //    训练端不强制 CSRF(2026-07-31 设计:cookie + SameSite=Lax 已提供基础保护)
   if (isWriteMethod(cfg.method) && store === useAuthStore()) {
     const csrf = readCookie('tdj_csrf')
     if (csrf) cfg.headers['X-CSRF-Token'] = csrf
@@ -84,6 +85,9 @@ api.interceptors.request.use((cfg) => {
 //       - url 是 /api/train/* → 当成 train 跳 /
 //       - 其余 → 当成 admin 跳 /admin/login
 //   这样无论接口是哪个 token 失败,落到对应用户的登录页,绝不会把训练用户扔回 admin。
+//
+// 2026-07-31 P0-2 修复: 训练端 401 → 先尝试 /api/train/refresh, 成功则重发原请求;
+//   refresh 失败再走原清理 + 跳登录流程。
 api.interceptors.response.use(
   (resp) => {
     const body = resp.data
@@ -95,9 +99,10 @@ api.interceptors.response.use(
     }
     return body
   },
-  (err) => {
+  async (err) => {
     const status = err.response?.status
-    const url = err.config?.url || ''
+    const originalConfig = err.config || {}
+    const url = originalConfig.url || ''
     const data = err.response?.data
     const msg = data?.detail || data?.message || err.message || '请求失败'
 
@@ -105,15 +110,23 @@ api.interceptors.response.use(
       const path = router.currentRoute.value.path || ''
       const onAdminPage = path.startsWith('/admin')
       const onTrainPage = path === '/' || path.startsWith('/train')
-
       // URL 维度:谁家的请求(只用于"URL 决定 app 走向"这一层)
       const isTrainUrl = url.includes('/train/') && !url.includes('/train/admin/')
-
-      // 更稳妥:URL 中能区分的全部按 URL;无法区分时按当前所在路由
       let app = 'admin'
       if (isTrainUrl) app = 'train'
       else if (onTrainPage && !onAdminPage) app = 'train'
-      // else admin (兜底)
+
+      // 训练端 401 → 尝试 refresh(未重试过 + 非 /refresh/ /login/ /register/ 自身)
+      const isAuthEndpoint = /\/(refresh|login|register|logout)(\/|$|\?)/.test(url)
+      if (app === 'train' && !originalConfig._retried && !isAuthEndpoint) {
+        try {
+          await api.post('/train/refresh')
+          originalConfig._retried = true
+          return api(originalConfig)  // 重发原请求,新 cookie 已 set
+        } catch {
+          // refresh 失败 → 走原清理 + 跳登录
+        }
+      }
 
       if (app === 'train') {
         const t = useTrainAuthStore()

@@ -28,14 +28,28 @@ REFRESH_COOKIE = "tdj_refresh"
 CSRF_COOKIE = "tdj_csrf"
 CSRF_HEADER = "X-CSRF-Token"
 
+# ---- 训练端独立 cookie 命名空间(2026-07-31 起 P0-1 修复)----
+TRAIN_ACCESS_COOKIE = "tdj_train_access"
+TRAIN_REFRESH_COOKIE = "tdj_train_refresh"
+
 
 # ---------- 指纹 ----------
 def _ua_hash(request: Optional[Request]) -> str:
-    """客户端指纹 = UA 哈希。生产可叠加 IP/screen/lang 等。"""
-    ua = ""
-    if request is not None:
-        ua = request.headers.get("user-agent", "")
-    return hashlib.sha256(ua.encode("utf-8", "ignore")).hexdigest()[:32]
+    """客户端指纹 = UA + Accept-Language + Accept-Encoding 的 SHA256(2026-07-31 P1-6 修复)。
+
+    选择这三个 header 的原因:
+      - User-Agent: 浏览器+版本,稳定但部分移动浏览器会自动更新
+      - Accept-Language: 浏览器语言,跨设备几乎不变
+      - Accept-Encoding: 浏览器压缩偏好,跨设备几乎不变
+    三个一起用,大幅降低"被误踢"的概率;同时仍能识别 UA 之外的明显环境切换。
+    """
+    if request is None:
+        return ""
+    ua = request.headers.get("user-agent", "")
+    lang = request.headers.get("accept-language", "")
+    enc = request.headers.get("accept-encoding", "")
+    raw = f"{ua}|{lang}|{enc}"
+    return hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()[:32]
 
 
 def fingerprint_for(request: Optional[Request]) -> str:
@@ -171,6 +185,36 @@ def set_auth_cookies(response: Response, access: str, refresh: Optional[str], cs
 
 def clear_auth_cookies(response: Response):
     for k in (ACCESS_COOKIE, REFRESH_COOKIE, CSRF_COOKIE):
+        response.delete_cookie(k, path="/")
+
+
+# ---- 训练端 cookie 工具(P0-1 修复)----
+def set_train_cookies(response: Response, access: str, refresh: Optional[str] = None):
+    """下发训练端鉴权 cookie(httpOnly + Secure(prod) + SameSite=Lax)。
+    训练端不强制 CSRF(2026-07-31 设计:cookie 同源 + SameSite=Lax 已提供基础保护,
+    CSRF 校验仍走管理端;训练端的写操作风险远低于管理端)。"""
+    is_prod = not settings.is_dev
+    common = {
+        "httponly": True,
+        "secure": is_prod,
+        "samesite": "lax",
+        "path": "/",
+    }
+    response.set_cookie(
+        key=TRAIN_ACCESS_COOKIE, value=access,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        **common,
+    )
+    if refresh:
+        response.set_cookie(
+            key=TRAIN_REFRESH_COOKIE, value=refresh,
+            max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+            **common,
+        )
+
+
+def clear_train_cookies(response: Response):
+    for k in (TRAIN_ACCESS_COOKIE, TRAIN_REFRESH_COOKIE):
         response.delete_cookie(k, path="/")
 
 

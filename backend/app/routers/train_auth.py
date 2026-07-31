@@ -7,18 +7,36 @@ P0 加固:
 - 拒绝明文密码(老数据要求重置)
 - 注册时不打印密码哈希
 - 兑换成功不泄漏码面值是否过大
+
+P0-1 修复 (2026-07-31): 训练端 access token 改用 httpOnly cookie
+P0-2 修复 (2026-07-31): 训练端 refresh 机制
+  - access 短(默认 12h) + refresh 长(7d) 双 token
+  - /api/train/refresh 端点支持旋转 + DB 吊销
+  - train_token 表加 revoked / refresh_jti 列
 """
 import hashlib
 import hmac
 import logging
 import re
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status, Query
+from jose import JWTError
 from pydantic import BaseModel, Field, field_validator
 
-from app.auth import create_access_token
+from app.auth import (
+    clear_train_cookies,
+    create_access_token,
+    decode_token,
+    fingerprint_for,
+    is_refresh_revoked,
+    issue_token_pair,
+    refresh_jti_from_payload,
+    rotate_refresh,
+    set_train_cookies,
+)
 from app.config import settings
 from app.deps_train import get_current_train_user
 from app.rate_limit import limiter
@@ -139,36 +157,91 @@ class RedeemReq(BaseModel):
 
 
 # =========================================================
-# Token 记录
+# Token 记录 (2026-07-31 P0-2: 加 refresh 旋转 + 吊销)
 # =========================================================
 TOKEN_TTL_DAYS = 7
-TOKEN_BYTES = 32
 
 
 def _ensure_token_table() -> None:
+    """建表 + 老库兼容补列 (revoked / refresh_jti)"""
     execute(
         "CREATE TABLE IF NOT EXISTS train_token("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "  user_id INTEGER NOT NULL,"
         "  token TEXT UNIQUE NOT NULL,"
+        "  refresh_jti TEXT,"
         "  expires_at TEXT NOT NULL,"
+        "  revoked INTEGER DEFAULT 0,"
         "  created_at TEXT DEFAULT (datetime('now', 'localtime'))"
         ")"
     )
+    # 老库兼容:补列
+    for col_def, col_name in (
+        ("refresh_jti TEXT", "refresh_jti"),
+        ("revoked INTEGER DEFAULT 0", "revoked"),
+    ):
+        try:
+            execute(f"SELECT {col_name} FROM train_token LIMIT 1")
+        except Exception:
+            execute(f"ALTER TABLE train_token ADD COLUMN {col_def}")
 
 
-def _issue_token(user_id: int) -> str:
-    """签发训练端 JWT(短 token,供 get_current_train_user 校验)"""
-    return create_access_token(subject=str(user_id), extra={"kind": "train"})
+def _issue_train_token_pair(
+    user_id: int,
+    request: Optional[Request] = None,
+) -> tuple[str, str, str, str]:
+    """签发训练端 access + refresh 双 token (P0-2 修复)。
 
-
-def _record_token(user_id: int, jti: str) -> None:
-    _ensure_token_table()
-    expires = (datetime.now() + timedelta(days=TOKEN_TTL_DAYS)).isoformat(timespec="seconds")
-    execute(
-        "INSERT INTO train_token(user_id, token, expires_at) VALUES(?, ?, ?)",
-        (user_id, jti, expires),
+    返回 (access, refresh, access_jti, refresh_jti)。
+    access 绑定客户端指纹(防 XSS/中间人偷走 token 后跨浏览器使用)。
+    """
+    fp = fingerprint_for(request) if request else None
+    access = create_access_token(
+        subject=str(user_id),
+        extra={"kind": "train"},
+        fingerprint=fp,
+        token_type="access",
     )
+    refresh = create_access_token(
+        subject=str(user_id),
+        extra={"kind": "train"},
+        token_type="refresh",
+    )
+    access_jti = refresh_jti_from_payload(access)  # 取 access jti
+    refresh_jti = refresh_jti_from_payload(refresh)
+    return access, refresh, access_jti, refresh_jti
+
+
+def _record_token(
+    user_id: int,
+    access_jti: str,
+    refresh_jti: Optional[str] = None,
+    ttl_days: int = TOKEN_TTL_DAYS,
+) -> None:
+    _ensure_token_table()
+    expires = (
+        datetime.now(timezone.utc) + timedelta(days=ttl_days)
+    ).isoformat(timespec="seconds")
+    execute(
+        "INSERT INTO train_token(user_id, token, refresh_jti, expires_at) "
+        "VALUES(?, ?, ?, ?)",
+        (user_id, access_jti, refresh_jti, expires),
+    )
+
+
+def _revoke_token(jti: str) -> None:
+    _ensure_token_table()
+    execute("UPDATE train_token SET revoked = 1 WHERE token = ?", (jti,))
+
+
+def _revoke_refresh(jti: str) -> None:
+    _ensure_token_table()
+    execute("UPDATE train_token SET revoked = 1 WHERE refresh_jti = ?", (jti,))
+
+
+def _revoke_all_for(user_id: int) -> None:
+    _ensure_token_table()
+    execute("UPDATE train_token SET revoked = 1 WHERE user_id = ?", (user_id,))
 
 
 # =========================================================
@@ -201,10 +274,13 @@ def register(req: RegisterReq, request: Request, response: Response):
         conn.execute(
             "INSERT INTO training_wallet(user_id, balance) VALUES(?, 0)", (uid,)
         )
-    token = _issue_token(uid)
+    # 2026-07-31 P0-1 修复: cookie 模式签发 token
+    access, refresh, ajti, rjti = _issue_train_token_pair(uid, request)
+    _record_token(uid, ajti, rjti)
+    set_train_cookies(response, access, refresh)
     return {
-        "access_token": token,
-        "token": token,
+        "access_token": access,  # 兼容旧调用(老前端 Bearer)
+        "token": access,
         "user": {"id": uid, "username": req.username, "nickname": req.nickname or req.username},
     }
 
@@ -212,7 +288,7 @@ def register(req: RegisterReq, request: Request, response: Response):
 @router.post("/login")
 @limiter.limit(settings.LOGIN_RATE_LIMIT)
 def login(req: LoginReq, request: Request, response: Response):
-    """登录(限速 + 错误文案统一)"""
+    """登录(限速 + 错误文案统一 + 2026-07-31 改 cookie 模式)"""
     row = query_one(
         "SELECT id, username, display_name, password_hash, salt, is_active "
         "FROM training_user WHERE username = ?",
@@ -241,10 +317,13 @@ def login(req: LoginReq, request: Request, response: Response):
         "UPDATE training_user SET last_login = datetime('now','localtime') WHERE id = ?",
         (uid,),
     )
-    token = _issue_token(uid)
+    # 2026-07-31 P0-1 修复: cookie 模式
+    access, refresh, ajti, rjti = _issue_train_token_pair(uid, request)
+    _record_token(uid, ajti, rjti)
+    set_train_cookies(response, access, refresh)
     return {
-        "access_token": token,
-        "token": token,
+        "access_token": access,  # 兼容旧调用
+        "token": access,
         "user_id": uid,
         "username": username,
         "display_name": display_name or username,
@@ -253,10 +332,61 @@ def login(req: LoginReq, request: Request, response: Response):
 
 
 @router.post("/logout")
-def logout(user: dict = Depends(get_current_train_user)):
-    _ensure_token_table()
-    execute("DELETE FROM train_token WHERE user_id = ?", (user["id"],))
+def logout(response: Response, user: dict = Depends(get_current_train_user)):
+    """登出:吊销该用户所有 train_token + 清 cookie"""
+    _revoke_all_for(user["id"])
+    clear_train_cookies(response)
     return {"message": "已登出"}
+
+
+@router.post("/refresh")
+def refresh(request: Request, response: Response):
+    """用 refresh token 换新 access + 旋转 refresh (P0-2 修复)。"""
+    rt = request.cookies.get(TRAIN_REFRESH_COOKIE)
+    # 兼容旧 Bearer 调用
+    if not rt:
+        auth = request.headers.get("authorization") or request.headers.get("Authorization")
+        if auth and auth.lower().startswith("bearer "):
+            rt = auth.split(" ", 1)[1].strip()
+    if not rt:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="缺少 refresh token",
+        )
+    try:
+        payload = decode_token(rt, expected_type="refresh")
+    except HTTPException:
+        raise
+    kind = payload.get("kind")
+    sub = payload.get("sub")
+    if kind != "train" or not sub:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="refresh token 类型错误",
+        )
+    rjti = payload.get("jti", "")
+    if not rjti or is_refresh_revoked(rjti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="refresh token 已失效",
+        )
+    # 解析 sub 到 user_id
+    try:
+        uid = int(sub)
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="refresh token sub 非法",
+        )
+    # 吊销旧 refresh, 记录新 access + refresh
+    _revoke_refresh(rjti)
+    new_access, new_refresh, new_ajti, new_rjti = _issue_train_token_pair(uid, request)
+    _record_token(uid, new_ajti, new_rjti)
+    set_train_cookies(response, new_access, new_refresh)
+    return {
+        "access_token": new_access,  # 兼容旧调用
+        "user_id": uid,
+    }
 
 
 @router.get("/me")
@@ -305,7 +435,11 @@ def get_wallet(user: dict = Depends(get_current_train_user)):
 
 
 @router.post("/change-password")
-def change_password(req: ChangePwReq, user: dict = Depends(get_current_train_user)):
+def change_password(
+    req: ChangePwReq,
+    response: Response,
+    user: dict = Depends(get_current_train_user),
+):
     row = query_one(
         "SELECT password_hash, salt FROM training_user WHERE id = ?", (user["id"],)
     )
@@ -317,8 +451,9 @@ def change_password(req: ChangePwReq, user: dict = Depends(get_current_train_use
         "UPDATE training_user SET password_hash = ?, salt = '' WHERE id = ?",
         (hash_password(req.new_password), user["id"]),
     )
-    _ensure_token_table()
-    execute("DELETE FROM train_token WHERE user_id = ?", (user["id"],))
+    # 改密 → 吊销所有 token + 清 cookie (2026-07-31 P0-1 修复)
+    _revoke_all_for(user["id"])
+    clear_train_cookies(response)
     return {"message": "密码已修改, 请重新登录"}
 
 

@@ -3,6 +3,7 @@
 - 使用 threading 在 FastAPI 中执行耗时任务(更新/回测)
 - 维护内存中的任务状态,支持前端轮询
 - 日志通过 logging 写入 settings.LOG_DIR,并保留最近 200 行
+- 任务结束自动写 update_log 落库(2026-07-31 起,P0-3 修复)
 """
 import inspect
 import logging
@@ -14,6 +15,7 @@ from datetime import datetime
 from typing import Callable, Dict, Optional
 
 from app.config import settings
+from db.database import get_conn as _log_get_conn
 
 
 def _func_accepts_progress_callback(func: Callable) -> bool:
@@ -187,6 +189,26 @@ class TaskManager:
                 logging.error(f"[Task:{task_id}] 失败: {e}\n{rec._error}")
             finally:
                 rec.ended_at = datetime.now().isoformat(timespec="seconds")
+                # 写 update_log 落库(2026-07-31 修复 P0-3:进程重启不丢历史)
+                try:
+                    affected = self._extract_affected_rows(rec.progress.get("result"))
+                    with _log_get_conn() as conn:
+                        conn.execute(
+                            "INSERT INTO update_log("
+                            "  task_name, status, affected_rows,"
+                            "  start_time, end_time, message"
+                            ") VALUES(?, ?, ?, ?, ?, ?)",
+                            (
+                                rec.name,
+                                rec.status,
+                                affected,
+                                rec.started_at,
+                                rec.ended_at,
+                                (rec.message or "")[:500],
+                            ),
+                        )
+                except Exception as e:
+                    logging.warning(f"[Task:{task_id}] 写 update_log 失败: {e}")
                 # 日志保留 30 秒后清理
                 def _cleanup():
                     time.sleep(30)
@@ -198,6 +220,44 @@ class TaskManager:
             self._threads[task_id] = t
         t.start()
         return task_id
+
+    @staticmethod
+    def _extract_affected_rows(result) -> int:
+        """从任务 result 字典里尽量提取影响行数(用于 update_log.affected_rows)。
+
+        优先级: 显式 affected_rows / rows / total / row_count → success 字段 → 累加 int 值
+        """
+        if not isinstance(result, dict):
+            return 0
+        # 1) 显式字段
+        for k in ("affected_rows", "rows", "total", "row_count"):
+            v = result.get(k)
+            if isinstance(v, int):
+                return v
+            if isinstance(v, dict):
+                # 嵌套 dict(如 kline_daily 的 stats)累加 int 值
+                sub = sum(int(x) for x in v.values() if isinstance(x, (int, float)))
+                if sub:
+                    return sub
+        # 2) success 字段(常见于并行更新器)
+        s = result.get("success")
+        if isinstance(s, int):
+            return s
+        # 3) stages / nested dict 累加
+        stages = result.get("stages")
+        if isinstance(stages, dict):
+            total = 0
+            for sv in stages.values():
+                if isinstance(sv, dict):
+                    for k in ("success", "rows", "total", "row_count"):
+                        v = sv.get(k)
+                        if isinstance(v, int):
+                            total += v
+                            break
+            if total:
+                return total
+        # 4) 累加所有 int 值(兜底)
+        return sum(int(v) for v in result.values() if isinstance(v, int))
 
     def _update_progress(self, rec: TaskRecord, progress: dict):
         rec.progress.update(progress)
@@ -215,6 +275,48 @@ class TaskManager:
                 reverse=True,
             )[:limit]
         return [r.to_dict() for r in recs]
+
+    def list_persisted(
+        self,
+        limit: int = 50,
+        task_name: Optional[str] = None,
+    ) -> list:
+        """从 update_log 读历史(进程重启后仍可查,P0-3 修复)。
+
+        :param task_name: 按任务名前缀过滤(如 "kline_daily" / "sync_latest")
+        """
+        try:
+            with _log_get_conn() as conn:
+                if task_name:
+                    rows = conn.execute(
+                        "SELECT id, task_name, status, affected_rows,"
+                        "       start_time, end_time, message "
+                        "FROM update_log WHERE task_name LIKE ? "
+                        "ORDER BY id DESC LIMIT ?",
+                        (f"{task_name}%", limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT id, task_name, status, affected_rows,"
+                        "       start_time, end_time, message "
+                        "FROM update_log ORDER BY id DESC LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+        except Exception as e:
+            logging.warning(f"[TaskManager] 读 update_log 失败: {e}")
+            return []
+        return [
+            {
+                "id": r[0],
+                "task_name": r[1],
+                "status": r[2],
+                "affected_rows": r[3] or 0,
+                "started_at": r[4],
+                "ended_at": r[5],
+                "message": r[6] or "",
+            }
+            for r in rows
+        ]
 
 
 task_manager = TaskManager()

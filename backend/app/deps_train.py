@@ -1,15 +1,32 @@
 """
-训练端的依赖项:单独的 Token 前缀为 't_',与管理员区分开,
+训练端的依赖项:单独的 Token 命名空间,与管理员区分开,
 但复用同一个 JWT secret。
+
+P0-1 修复 (2026-07-31): 训练端 access token 改用 httpOnly cookie 而非 Bearer header。
+  - 优先从 cookie 读 `tdj_train_access` (httpOnly + SameSite=Lax + Secure(prod))
+  - 回退到 Authorization Bearer header (兼容旧调用,会在 access 过期后自然淘汰)
+  - access token 绑定客户端指纹 (UA + Accept-Language + Accept-Encoding) 防止 token 泄露后被滥用
+
+P0-2 修复 (2026-07-31): 训练端 refresh 机制
+  - refresh token 走 `/api/train/refresh` 旋转 + DB 吊销
+  - train_token 表加 revoked/refresh_jti 列
 """
 import hashlib
+import hmac
 import secrets
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 
+from app.auth import (
+    TRAIN_ACCESS_COOKIE,
+    TRAIN_REFRESH_COOKIE,
+    create_access_token,
+    decode_token,
+    fingerprint_for,
+)
 from app.config import settings
 from db.database import user_query_one
 
@@ -31,24 +48,39 @@ def hash_train_pw(password: str, salt: Optional[str] = None) -> tuple[str, str]:
 _hash_pw = hash_train_pw
 
 
-def get_current_train_user(token: str = Depends(oauth2_scheme_train)) -> dict:
-    """训练端用户鉴权"""
+def _extract_train_token(request: Request) -> Optional[str]:
+    """优先读训练端 cookie, 回退到 Authorization Bearer (兼容旧调用)。"""
+    cookie = request.cookies.get(TRAIN_ACCESS_COOKIE)
+    if cookie:
+        return cookie
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    if auth and auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1].strip()
+    return None
+
+
+def get_current_train_user(
+    request: Request,
+    bearer_token: Optional[str] = Depends(oauth2_scheme_train),
+) -> dict:
+    """训练端用户鉴权 (P0-1 修复后, 优先 cookie, 绑定指纹)。"""
     cred_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="无法验证身份",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    token = _extract_train_token(request) or bearer_token
     if not token:
         raise cred_exc
+
     try:
-        payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
-        )
+        # 绑定指纹(若有 fp claim): UA + Accept-Language + Accept-Encoding
+        fp = fingerprint_for(request)
+        payload = decode_token(token, expected_type="access", fingerprint=fp)
         kind = payload.get("kind")
         sub = payload.get("sub")
         if kind != "train" or not sub:
             raise cred_exc
-        # 兼容两种 sub 格式:数字字符串(新) / 用户名(旧)
         if str(sub).isdigit():
             row = user_query_one(
                 "SELECT id, username, display_name, last_login, is_active "
@@ -62,6 +94,8 @@ def get_current_train_user(token: str = Depends(oauth2_scheme_train)) -> dict:
                 "FROM training_user WHERE username = ?",
                 (username,),
             )
+    except HTTPException:
+        raise
     except JWTError:
         raise cred_exc
 

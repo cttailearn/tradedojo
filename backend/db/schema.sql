@@ -152,6 +152,8 @@ CREATE TABLE IF NOT EXISTS training_session (
     total_fee_paid  REAL DEFAULT 0,                 -- 本次会话消耗的训练资金
     status          TEXT DEFAULT 'active',          -- active / finished
     reveal_date     TEXT,                           -- 已揭示到的日期 (粘性推进)
+    auto_stop_loss_pct  REAL DEFAULT 0,            -- 2026-07-31 P2-3: 自动止损比例 (0=关闭, e.g. 0.08)
+    auto_take_profit_pct REAL DEFAULT 0,            -- 2026-07-31 P2-3: 自动止盈比例 (0=关闭)
     created_at      TEXT DEFAULT (datetime('now', 'localtime')),
     updated_at      TEXT DEFAULT (datetime('now', 'localtime'))
 );
@@ -165,7 +167,7 @@ CREATE TABLE IF NOT EXISTS training_order (
     user_id         INTEGER NOT NULL,
     trade_date      TEXT NOT NULL,                  -- 撮合交易日(=当时的 current_date)
     side            TEXT NOT NULL,                  -- BUY / SELL
-    price           REAL NOT NULL,
+    price           REAL NOT NULL,                  -- 限价单的目标价 / 即时单的成交价
     quantity        INTEGER NOT NULL,
     amount          REAL NOT NULL,
     commission      REAL DEFAULT 0,
@@ -173,11 +175,13 @@ CREATE TABLE IF NOT EXISTS training_order (
     transfer_fee    REAL DEFAULT 0,
     total_fee       REAL DEFAULT 0,
     realized_pnl    REAL DEFAULT 0,                 -- 卖出时累计盈亏
+    pending_status  TEXT DEFAULT 'filled',         -- 2026-07-31 优化: filled / pending / cancelled / expired
     note            TEXT,
     created_at      TEXT DEFAULT (datetime('now', 'localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_order_session ON training_order(session_id);
 CREATE INDEX IF NOT EXISTS idx_order_user_date ON training_order(user_id, trade_date);
+CREATE INDEX IF NOT EXISTS idx_order_pending ON training_order(session_id, pending_status);
 
 -- 训练当前持仓(每个 (session, code) 一行,数量+均价)
 CREATE TABLE IF NOT EXISTS training_position (
@@ -238,3 +242,20 @@ CREATE TABLE IF NOT EXISTS train_token (
 );
 CREATE INDEX IF NOT EXISTS idx_train_token_user ON train_token(user_id);
 CREATE INDEX IF NOT EXISTS idx_train_token_token ON train_token(token);
+
+-- 2026-07-31 P1-12: 训练事件流(支持撤销/回放)
+-- 每个写动作记一条,含 payload 和 snapshot(撤销时回滚用)
+CREATE TABLE IF NOT EXISTS training_event (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id    INTEGER NOT NULL,
+    user_id       INTEGER NOT NULL,
+    event_type    TEXT NOT NULL,            -- start / advance / buy / sell / finish / rollback
+    trade_date    TEXT,                    -- 适用 buy/sell/advance
+    payload_json  TEXT,                    -- 事件本身:订单 / 推进天数 / 起始资金
+    snapshot_json TEXT,                    -- 事件前后快照:持仓 / 钱包 / reveal_date(用于回滚)
+    note          TEXT,
+    created_at    TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_event_session  ON training_event(session_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_event_user     ON training_event(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_event_type     ON training_event(event_type);

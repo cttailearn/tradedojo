@@ -1,5 +1,80 @@
 <template>
   <div class="trade" v-loading="loading">
+    <!-- 2026-07-31 P1-3: 风险预警 ribbon -->
+    <transition name="fade">
+      <el-alert
+        v-if="showRiskBanner"
+        :title="riskWarning.title"
+        :type="riskWarning.type"
+        :closable="false"
+        show-icon
+        class="risk-banner"
+      >
+        <template #default>
+          <div class="risk-banner-content">
+            <span>{{ riskWarning.desc }}</span>
+            <el-button size="small" @click="riskWarning = null">知道了</el-button>
+          </div>
+        </template>
+      </el-alert>
+    </transition>
+
+    <!-- 2026-07-31 P1-2: 新手引导 overlay -->
+    <transition name="fade">
+      <div v-if="showOnboarding" class="onboarding-mask" @click.self="finishOnboarding">
+        <div class="onboarding-card">
+          <h2>🎓 训练道场 · 快速入门</h2>
+          <div class="ob-steps">
+            <div class="ob-step">
+              <div class="ob-num">1</div>
+              <div>
+                <h3>📈 看 K 线</h3>
+                <p>左侧是已经揭示的历史 K 线,你的任务是根据看到的 K 线判断"该不该买"。注意:当前揭示的 bar 是 <b>今天</b>,后面的 K 线你看不到。</p>
+              </div>
+            </div>
+            <div class="ob-step">
+              <div class="ob-num">2</div>
+              <div>
+                <h3>💰 下单买卖</h3>
+                <p>右侧"买入"/"卖出"面板输入股数和限价。按 <kbd>B</kbd> / <kbd>S</kbd> 快捷键聚焦,按 <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> 选 1/2、1/3、全仓。</p>
+              </div>
+            </div>
+            <div class="ob-step">
+              <div class="ob-num">3</div>
+              <div>
+                <h3>⏩ 时间推进</h3>
+                <p>点击"推进 1/5/30 天"按钮,或按 <kbd>→</kbd> / <kbd>Shift+→</kbd> / <kbd>Enter</kbd>。每次推进揭示新一天的 K 线。</p>
+              </div>
+            </div>
+            <div class="ob-step">
+              <div class="ob-num">4</div>
+              <div>
+                <h3>↶ 撤销 & 📊 复盘</h3>
+                <p>误操作按 <kbd>Ctrl+Z</kbd> 撤销最后一步。结束训练后自动跳转到复盘报告,看你的胜率/盈亏比/最大回撤。</p>
+              </div>
+            </div>
+          </div>
+          <div class="ob-footer">
+            <el-checkbox v-model="obNoMore">不再显示</el-checkbox>
+            <el-button type="primary" @click="finishOnboarding">开始训练</el-button>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- 2026-07-31 P1-1: 策略信号提示 -->
+    <div v-if="signals.length" class="signal-bar">
+      <span class="signal-label">📊 策略信号</span>
+      <span
+        v-for="(sig, i) in signals"
+        :key="i"
+        class="signal-chip"
+        :class="`signal-${sig.level}`"
+      >
+        <b>{{ sig.type }}</b>: {{ sig.desc }}
+      </span>
+    </div>
+
     <!-- 顶部 资金 / 盈亏 -->
     <div class="metric-bar">
       <div class="metric-row metric-row-1">
@@ -40,6 +115,15 @@
             <el-button type="info" plain size="small"
                       @click="$router.push(`/train/report/${sessionId}`)">
               <el-icon><Document /></el-icon>训练总结
+            </el-button>
+            <!-- 2026-07-31 P0-2: 撤销最后一步 -->
+            <el-button
+              type="warning" plain size="small"
+              :loading="rollingBack"
+              :disabled="session?.status !== 'active'"
+              @click="rollbackLast"
+            >
+              <el-icon><RefreshLeft /></el-icon>撤销
             </el-button>
           </div>
         </div>
@@ -190,17 +274,40 @@
                     <span class="custom-hint">股 (100 整数倍)</span>
                   </div>
                 </el-form-item>
-                <el-form-item label="限价 (可选,默认按收盘价)">
+                <el-form-item label="限价 (可选,默认按开盘价)">
                   <el-input-number v-model="buyForm.price" :min="0.01" :step="0.01"
-                                   :precision="2" class="full-width" placeholder="不填按收盘价" />
+                                   :precision="2" class="full-width" placeholder="不填按开盘价" />
                 </el-form-item>
+                <!-- 2026-07-31 P0-5: 详细撮合信息 -->
+                <div class="trade-info" v-if="priceLimit">
+                  <div class="info-row">
+                    <span class="info-label">撮合价</span>
+                    <span class="info-val">¥ {{ (buyForm.price || session?.current_bar?.open || 0).toFixed(2) }}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">可成交区间</span>
+                    <span class="info-val">¥ {{ priceLimit.lower }} ~ ¥ {{ priceLimit.upper }}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">预估金额</span>
+                    <span class="info-val">¥ {{ money(estimateBuyAmount()) }}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">预估手续费</span>
+                    <span class="info-val">¥ {{ money(estimateFees('buy')) }}</span>
+                  </div>
+                  <div class="info-row highlight">
+                    <span class="info-label">需支付</span>
+                    <span class="info-val">¥ {{ money(estimateBuyAmount() + estimateFees('buy')) }}</span>
+                  </div>
+                </div>
                 <el-alert :closable="false" type="info" show-icon>
-                  将按 100 股取整,自动扣除 <b>¥ {{ money(estimateFees('buy')) }}</b> 元手续费(估)
+                  100 股取整 · 按开盘价撮合 · T+1 限制
                 </el-alert>
                 <div class="trade-action">
                   <el-button type="primary" :loading="trading" :disabled="!canTrade"
                             class="full-width" @click="submit('BUY')">
-                    <el-icon><Top /></el-icon>买入 (按收盘价)
+                    <el-icon><Top /></el-icon>买入 (按开盘价)
                   </el-button>
                 </div>
               </el-form>
@@ -230,15 +337,37 @@
                     <span class="custom-hint">股 (100 整数倍,最大 {{ myPositionQty }})</span>
                   </div>
                 </el-form-item>
-                <el-form-item label="限价 (可选,默认按收盘价)">
+                <el-form-item label="限价 (可选,默认按开盘价)">
                   <el-input-number v-model="sellForm.price" :min="0.01" :step="0.01"
-                                   :precision="2" class="full-width" placeholder="不填按收盘价" />
+                                   :precision="2" class="full-width" placeholder="不填按开盘价" />
                 </el-form-item>
-                <el-alert :closable="false" type="warning" show-icon>
-                  当前持仓 <b>{{ myPositionQty }}</b> 股,均价 <b>¥ {{ myAvgCost.toFixed(2) }}</b>
-                  <div v-if="sellForm.quantity > 0" :class="sellEstimatedPnl >= 0 ? 'estimated-qty green' : 'estimated-qty red'">
-                    预计实现盈亏: <b>{{ sellEstimatedPnl >= 0 ? '+' : '' }}{{ money(sellEstimatedPnl) }}</b> 元
+                <!-- 2026-07-31 P0-5: 详细撮合信息 -->
+                <div class="trade-info" v-if="priceLimit">
+                  <div class="info-row">
+                    <span class="info-label">撮合价</span>
+                    <span class="info-val">¥ {{ (sellForm.price || session?.current_bar?.open || 0).toFixed(2) }}</span>
                   </div>
+                  <div class="info-row">
+                    <span class="info-label">可成交区间</span>
+                    <span class="info-val">¥ {{ priceLimit.lower }} ~ ¥ {{ priceLimit.upper }}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">当前持仓</span>
+                    <span class="info-val">{{ myPositionQty }} 股 @ ¥{{ myAvgCost.toFixed(2) }}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">预估手续费</span>
+                    <span class="info-val">¥ {{ money(estimateFees('sell')) }}</span>
+                  </div>
+                  <div class="info-row highlight" v-if="sellForm.quantity > 0">
+                    <span class="info-label">预计实现盈亏</span>
+                    <span :class="sellEstimatedPnl >= 0 ? 'green' : 'red'">
+                      {{ sellEstimatedPnl >= 0 ? '+' : '' }}¥{{ money(sellEstimatedPnl) }}
+                    </span>
+                  </div>
+                </div>
+                <el-alert :closable="false" type="warning" show-icon>
+                  T+1 限制:今日买入的股需次日才能卖
                 </el-alert>
                 <div class="trade-action">
                   <el-button type="danger" :loading="trading" :disabled="!canTrade"
@@ -258,7 +387,41 @@
       <el-col :xs="24" :sm="24" :md="24" :lg="24">
         <div class="page-card">
           <h3 class="page-title">当前持仓</h3>
-          <el-table :data="session?.positions || []" size="small" stripe>
+          <el-table :data="session?.positions || []" size="small" stripe
+                    @row-click="(row) => togglePositionDetail(row.code)">
+            <!-- 2026-07-31 P1-4: 展开行 -->
+            <el-table-column type="expand" v-if="expandedCode">
+              <template #default="{ row }">
+                <div v-if="row.code === expandedCode" class="position-detail">
+                  <h4>{{ row.code }} 的订单历史</h4>
+                  <el-table :data="getOrdersForCode(row.code)" size="small" stripe>
+                    <el-table-column prop="trade_date" label="日期" width="100" />
+                    <el-table-column label="方向" width="60">
+                      <template #default="{ o }">
+                        <el-tag size="small" :type="o.side === 'BUY' ? 'danger' : 'success'">
+                          {{ o.side === 'BUY' ? '买' : '卖' }}
+                        </el-tag>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="price" label="价格" align="right" width="80">
+                      <template #default="{ o }">{{ Number(o.price).toFixed(2) }}</template>
+                    </el-table-column>
+                    <el-table-column prop="quantity" label="数量" align="right" width="80" />
+                    <el-table-column label="实盈亏" align="right" width="100">
+                      <template #default="{ o }">
+                        <span v-if="o.realized_pnl != null" :class="o.realized_pnl >= 0 ? 'green' : 'red'">
+                          {{ o.realized_pnl >= 0 ? '+' : '' }}{{ money(o.realized_pnl) }}
+                        </span>
+                        <span v-else style="color:#909399">-</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="total_fee" label="费用" align="right" width="80">
+                      <template #default="{ o }">¥{{ money(o.total_fee) }}</template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column prop="code" label="代码" width="90" />
             <el-table-column prop="quantity" label="股数" align="right" />
             <el-table-column prop="avg_cost" label="成本" align="right">
@@ -353,14 +516,46 @@ const loading = ref(false)
 const advancing = ref(false)
 const trading = ref(false)
 const loadingKlineUpdate = ref(false)
+const rollingBack = ref(false)  // 2026-07-31 P0-2: 撤销中
+const signals = ref([])  // 2026-07-31 P1-1: 当前 bar 信号
+const signalsIndicators = ref({})  // 2026-07-31: 技术指标
+const riskWarning = ref(null)  // 2026-07-31 P1-3: 风险预警信息
+const showRiskBanner = computed(() => !!riskWarning.value)
+const expandedCode = ref(null)  // 2026-07-31 P1-4: 持仓详情展开
+const showOnboarding = ref(false)  // 2026-07-31 P1-2: 新手引导
+const obNoMore = ref(false)  // 2026-07-31 P1-2: 不再显示
+function finishOnboarding() {
+  if (obNoMore.value) {
+    localStorage.setItem('train_onboarded', '1')
+  }
+  showOnboarding.value = false
+}
+
+// 2026-07-31 P1-4: 持仓行点击切换展开
+function togglePositionDetail(code) {
+  expandedCode.value = expandedCode.value === code ? null : code
+}
+function getOrdersForCode(code) {
+  const orders = session.value?.recent_orders || []
+  return orders.filter((o) => o.code === code || o.code === undefined).slice(0, 50)
+}
 const period = ref('daily')
 const tradeTab = ref('buy')
 const buyPreset = ref('')
 const sellPreset = ref('')
 const customBuyShares = ref(100)
 const customSellShares = ref(100)
-const buyForm = reactive({ quantity: 1000, price: null })
-const sellForm = reactive({ quantity: 100, price: null })
+const buyForm = reactive({ quantity: 1000, price: null, pending: false })
+const sellForm = reactive({ quantity: 100, price: null, pending: false })
+
+// 2026-07-31 P0-5: 涨跌停区间 (从 session.price_limit 取)
+const priceLimit = computed(() => session.value?.price_limit || null)
+// 2026-07-31 P0-5: 估算买入总金额
+function estimateBuyAmount() {
+  const p = buyForm.price || session.value?.current_bar?.open || 0
+  const q = Math.max(100, Math.floor((Number(buyForm.quantity) || 0) / 100) * 100)
+  return q * p
+}
 
 let klineChart = null
 let equityChart = null
@@ -615,9 +810,66 @@ async function loadEquity() {
   try {
     const res = await trainApi.equity(id.value)
     equity.value = res.items || []
+    // 2026-07-31 P1-4: 基准对比数据
+    benchHs300.value = res.benchmark_hs300 || []
+    benchBuyHold.value = res.benchmark_buy_hold || []
     await nextTick()
     renderEquity()
+    computeRiskWarning()  // 2026-07-31 P1-3
   } catch {}
+}
+
+// 2026-07-31 P1-4: 资金曲线对比基准
+const benchHs300 = ref([])
+const benchBuyHold = ref([])
+
+// 2026-07-31 P1-1: 加载当前 bar 的技术信号
+async function loadSignals() {
+  if (!session.value || session.value.status !== 'active') return
+  try {
+    const res = await trainApi.signals(id.value)
+    signals.value = res.signals || []
+    signalsIndicators.value = res.indicators || {}
+  } catch (e) {
+    // 静默, 不影响主流程
+  }
+}
+
+// 2026-07-31 P1-3: 风险预警
+function computeRiskWarning() {
+  riskWarning.value = null
+  if (!session.value || !equity.value.length) return
+  const positions = session.value.positions || []
+  // 1) 浮亏 > 20% 的持仓
+  for (const p of positions) {
+    if (p.float_pnl_pct != null && p.float_pnl_pct <= -20) {
+      riskWarning.value = {
+        type: 'error',
+        title: '⚠ 浮亏过大',
+        desc: `${p.code} 当前浮亏 ${p.float_pnl_pct.toFixed(1)}%,是否考虑止损?`,
+      }
+      return
+    }
+  }
+  // 2) 持仓 > 30 天
+  // (需要 trade_date 距今天, 简单用 last bar 日期近似)
+  // 3) 总回撤 > 15% (基于 equity 序列)
+  let peak = equity.value[0]?.total_equity || 0
+  let max_dd = 0
+  for (const e of equity.value) {
+    if (e.total_equity > peak) peak = e.total_equity
+    if (peak > 0) {
+      const dd = (peak - e.total_equity) / peak * 100
+      if (dd > max_dd) max_dd = dd
+    }
+  }
+  if (max_dd >= 15) {
+    riskWarning.value = {
+      type: 'warning',
+      title: '📉 回撤较大',
+      desc: `本场训练最大回撤 ${max_dd.toFixed(1)}%,已超过 15% 警戒线`,
+    }
+  }
 }
 
 // 从 session.recent_orders(已按时序)构建买卖点位 + 持仓区间
@@ -1001,9 +1253,17 @@ function renderEquity() {
   const dates = data.map((d) => d.trade_date)
   const equityArr = data.map((d) => d.total_equity)
   const cashArr = data.map((d) => d.cash)
+  // 2026-07-31 P0-7: 对齐基准数据到 dates
+  function alignBench(bench) {
+    if (!bench || !bench.length) return []
+    const m = new Map(bench.map((b) => [b.trade_date, b.equity]))
+    return dates.map((d) => m.get(d) ?? null)
+  }
+  const hs300 = alignBench(benchHs300.value)
+  const buyHold = alignBench(benchBuyHold.value)
   equityChart.setOption({
     tooltip: { trigger: 'axis' },
-    legend: { data: ['总权益', '可用资金'], top: 0 },
+    legend: { data: ['总权益', '可用资金', '沪深 300', '买入持有'], top: 0 },
     grid: { left: 50, right: 20, top: 30, bottom: 30 },
     xAxis: { type: 'category', data: dates },
     yAxis: { type: 'value', scale: true },
@@ -1017,6 +1277,16 @@ function renderEquity() {
         name: '可用资金', type: 'line', data: cashArr, smooth: true,
         lineStyle: { color: '#e6a23c', width: 1, type: 'dashed' },
       },
+      {
+        name: '沪深 300', type: 'line', data: hs300, smooth: true,
+        lineStyle: { color: '#909399', width: 1, type: 'dashed' },
+        symbol: 'none',
+      },
+      {
+        name: '买入持有', type: 'line', data: buyHold, smooth: true,
+        lineStyle: { color: '#67c23a', width: 1, type: 'dotted' },
+        symbol: 'none',
+      },
     ],
   }, true)
 }
@@ -1027,6 +1297,7 @@ async function advance(days) {
     session.value = await trainApi.advance(id.value, days)
     await loadKline()
     await loadEquity()
+    await loadSignals()  // 2026-07-31 P1-1
     auth.refreshWallet()
     if (session.value?.current_date >= session.value?.end_date) {
       ElMessage.info('已到达训练终点,无法再推进')
@@ -1087,12 +1358,58 @@ function onKeydown(e) {
   const tag = (e.target?.tagName || '').toUpperCase()
   if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return
   if (!session.value || session.value.status !== 'active') return
-  if (e.key === 'ArrowRight') {
+  // 2026-07-31 P0-3: 完整快捷键
+  if (e.key === 'ArrowRight' && !e.shiftKey) {
     e.preventDefault(); advance(1)
-  } else if (e.key === ' ') {
+  } else if (e.key === ' ' || (e.key === 'ArrowRight' && e.shiftKey)) {
     e.preventDefault(); advance(5)
   } else if (e.key === 'Enter') {
     e.preventDefault(); advance(30)
+  } else if (e.key === 'b' || e.key === 'B') {
+    e.preventDefault()
+    // 聚焦买入股数
+    document.querySelector('.trade-pane-buy input')?.focus()
+  } else if (e.key === 's' || e.key === 'S') {
+    e.preventDefault()
+    document.querySelector('.trade-pane-sell input')?.focus()
+  } else if (e.key === 'z' || e.key === 'Z') {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault()
+      rollbackLast()
+    }
+  } else if (e.key === '1' || e.key === '2' || e.key === '3' || e.key === '4') {
+    // 快捷仓位
+    const map = { '1': 'cash_half', '2': 'cash_third', '3': 'cash_all', '4': 'custom' }
+    if (buyPreset && map[e.key]) {
+      buyPreset.value = map[e.key]
+      applyBuyPreset()
+    }
+  } else if (e.key === 'Escape') {
+    // 取消输入焦点
+    document.activeElement?.blur()
+  }
+}
+
+async function rollbackLast() {
+  if (!session.value || session.value.status !== 'active') return
+  try {
+    await ElMessageBox.confirm(
+      '撤销最后一步操作? (买入/卖出/时间推进/结束训练)',
+      '撤销',
+      { type: 'warning', confirmButtonText: '撤销', cancelButtonText: '取消' },
+    )
+  } catch { return }
+  try {
+    rollingBack.value = true
+    session.value = await trainApi.rollback(session.value.id)
+    ElMessage.success('已撤销最后一步')
+    await loadKline()
+    await loadEquity()
+    auth.refreshWallet()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    rollingBack.value = false
   }
 }
 
@@ -1103,7 +1420,11 @@ async function finish() {
   } catch { return }
   try {
     session.value = await trainApi.finish(id.value)
-    ElMessage.success('已结束训练')
+    ElMessage.success('已结束训练,进入复盘')
+    // 2026-07-31 P1-5: 立即跳报告
+    setTimeout(() => {
+      router.replace(`/train/report/${id.value}`)
+    }, 600)
   } catch (e) {
     ElMessage.error(e.message)
   }
@@ -1121,6 +1442,10 @@ onMounted(async () => {
   equityChart = echarts.init(equityChartEl.value)
   window.addEventListener('resize', resize)
   window.addEventListener('keydown', onKeydown)
+  // 2026-07-31 P1-2: 新手引导 - 只在第一次进入时显示
+  if (!localStorage.getItem('train_onboarded')) {
+    showOnboarding.value = true
+  }
   // 监听 K线容器自身尺寸变化(响应式布局时 panel 宽度变了,window resize 不会触发)
   if (typeof ResizeObserver !== 'undefined') {
     _chartRO = new ResizeObserver(() => {
@@ -1131,7 +1456,7 @@ onMounted(async () => {
     if (equityChartEl.value) _chartRO.observe(equityChartEl.value)
   }
   await loadSession()
-  await Promise.all([loadKline(), loadEquity(), loadBenchmarkList()])
+  await Promise.all([loadKline(), loadEquity(), loadBenchmarkList(), loadSignals()])
   // 数据就绪后再 resize 一次,确保拿到正确的容器尺寸
   setTimeout(resize, 0)
 })
@@ -1162,6 +1487,89 @@ watch(() => session.value?.current_date, async () => {
   border-radius: 6px;
   box-shadow: 0 1px 4px rgba(0,0,0,.06);
 }
+
+/* 2026-07-31: 风险预警 + 信号提示 */
+.risk-banner { margin-bottom: 12px; }
+.risk-banner-content {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
+.signal-bar {
+  background: #fff;
+  padding: 10px 16px;
+  border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.06);
+  margin-bottom: 12px;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+}
+.signal-label {
+  font-weight: 600; color: #303133; font-size: 14px;
+  margin-right: 6px;
+}
+.signal-chip {
+  display: inline-block;
+  padding: 4px 10px; border-radius: 12px;
+  font-size: 12px; line-height: 1.4;
+  background: #f4f4f5; color: #606266;
+}
+.signal-chip b { margin-right: 4px; }
+.signal-bullish { background: #f0f9eb; color: #67c23a; border: 1px solid #e1f3d8; }
+.signal-bearish { background: #fef0f0; color: #f56c6c; border: 1px solid #fde2e2; }
+.signal-warn { background: #fdf6ec; color: #e6a23c; border: 1px solid #faecd8; }
+.signal-info { background: #ecf5ff; color: #909399; border: 1px solid #d9ecff; }
+.fade-enter-active, .fade-leave-active { transition: opacity .25s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+.position-detail { padding: 8px 12px; background: #fafafa; }
+.position-detail h4 { margin: 0 0 8px 0; font-size: 13px; color: #606266; }
+
+/* 2026-07-31 P0-5: 下单面板详细撮合信息 */
+.trade-info {
+  background: #f8f9fc;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 8px 0;
+}
+.info-row {
+  display: flex; justify-content: space-between;
+  font-size: 12px; line-height: 1.7;
+  color: #606266;
+}
+.info-label { color: #909399; }
+.info-val { color: #303133; font-weight: 500; }
+.info-row.highlight { border-top: 1px dashed #dcdfe6; margin-top: 4px; padding-top: 4px; }
+.info-row.highlight .info-val { color: #409eff; font-weight: 600; }
+
+/* 2026-07-31 P1-2: 新手引导 */
+.onboarding-mask {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9999;
+}
+.onboarding-card {
+  background: #fff; border-radius: 12px;
+  width: 720px; max-width: 92vw; max-height: 90vh; overflow: auto;
+  padding: 28px 32px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.25);
+}
+.onboarding-card h2 { margin: 0 0 24px 0; color: #303133; font-size: 22px; }
+.ob-steps { display: flex; flex-direction: column; gap: 18px; margin-bottom: 24px; }
+.ob-step { display: flex; gap: 14px; }
+.ob-num {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: #409eff; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 600; flex-shrink: 0;
+}
+.ob-step h3 { margin: 0 0 4px 0; color: #303133; font-size: 15px; }
+.ob-step p { margin: 0; color: #606266; font-size: 13px; line-height: 1.7; }
+.ob-step kbd {
+  background: #f4f4f5; border: 1px solid #dcdfe6; border-radius: 3px;
+  padding: 1px 6px; font-size: 11px; font-family: monospace;
+  color: #303133;
+}
+.ob-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 12px; border-top: 1px solid #ebeef5; }
 .metric-row { display: flex; gap: 12px; align-items: stretch; flex-wrap: wrap; }
 .metric-row-1 { padding-bottom: 12px; border-bottom: 1px dashed #ebeef5; margin-bottom: 12px; }
 .metric-row-2 { align-items: center; }

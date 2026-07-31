@@ -17,14 +17,14 @@
         </el-col>
         <el-col :span="8">
           <div class="big muted">
-            <div class="lbl">累计消耗 (训练费)</div>
+            <div class="lbl">累计交易消耗</div>
             <div class="val">¥ {{ money(data.total_spent) }}</div>
           </div>
         </el-col>
       </el-row>
 
       <el-alert type="info" :closable="false" show-icon style="margin-top: 12px;">
-        每次发起训练会按初始资金的 1% (5 ~ 50 元封顶) 从余额扣除。
+        2026-07-31 起训练已免费,发起训练不再扣任何固定费用;钱包余额全部可用于交易。
         <span v-if="data.balance < 50" style="color: #f56c6c;">
           余额偏低,建议尽快充值!
         </span>
