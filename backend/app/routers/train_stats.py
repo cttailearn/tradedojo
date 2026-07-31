@@ -367,6 +367,19 @@ def overview(user: dict = Depends(get_current_train_user)):
         price_position_distribution=price_position_distribution,
     )
 
+    # 2026-07-31 优化: 风险指标(基于所有 session 的 equity 聚合)
+    all_equity = query_all(
+        "SELECT trade_date, total_equity FROM training_equity te "
+        "JOIN training_session s ON te.session_id = s.id "
+        "WHERE s.user_id = ? ORDER BY te.trade_date ASC, te.id ASC",
+        (user_id,),
+    )
+    # 累加: 不同 session 的 equity 简单累加(估算组合视角,严谨要按现金+市值)
+    risk_metrics = calc_risk_metrics(
+        [{"trade_date": r[0], "total_equity": r[1]} for r in all_equity],
+        initial_cash=initial_cash or 0,
+    )
+
     # 12. 会话列表 + 摘要(供前端选择查看单次训练)
     sessions_summary = []
     for s in sessions:
@@ -417,11 +430,146 @@ def overview(user: dict = Depends(get_current_train_user)):
         "stock_ranking": stock_ranking,
         "monthly_pnl": monthly_pnl,
         "style_tags": style_tags,
+        "risk_metrics": risk_metrics,  # 2026-07-31 优化: 最大回撤/夏普/索提诺/卡玛
         "sessions": sessions_summary,
     }
 
 
 # ---------- 单 session 统计 ----------
+
+@router.get("/leaderboard")
+def leaderboard(
+    metric: str = Query("total_pnl", pattern="^(total_pnl|sharpe|win_rate|profit_factor)$"),
+    period: str = Query("all", pattern="^(all|monthly|weekly)$"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """训练排行榜(2026-07-31 P2-1 优化)。
+
+    多维度:
+      - total_pnl: 累计实现盈亏
+      - sharpe: 按 risk_metrics.annual_return / annual_volatility
+      - win_rate: 胜率
+      - profit_factor: 盈亏比
+
+    period:
+      - all: 全部训练
+      - monthly: 最近 30 天
+      - weekly: 最近 7 天
+    """
+    from datetime import datetime, timedelta
+    if period == "monthly":
+        since = (datetime.now() - timedelta(days=30)).isoformat()
+    elif period == "weekly":
+        since = (datetime.now() - timedelta(days=7)).isoformat()
+    else:
+        since = "1970-01-01"
+
+    # 拉所有完成的训练 + 关联 equity
+    if period == "all":
+        sessions = query_all(
+            "SELECT s.user_id, u.username, s.id, s.code, s.name, s.initial_cash, "
+            "       s.total_fee_paid, s.start_date, s.end_date, s.created_at, s.reveal_date "
+            "FROM training_session s "
+            "JOIN training_user u ON s.user_id = u.id "
+            "WHERE s.status = 'finished' "
+            "ORDER BY s.id DESC LIMIT 500",
+        )
+    else:
+        sessions = query_all(
+            "SELECT s.user_id, u.username, s.id, s.code, s.name, s.initial_cash, "
+            "       s.total_fee_paid, s.start_date, s.end_date, s.created_at, s.reveal_date "
+            "FROM training_session s "
+            "JOIN training_user u ON s.user_id = u.id "
+            "WHERE s.status = 'finished' AND s.created_at >= ? "
+            "ORDER BY s.id DESC LIMIT 500",
+            (since,),
+        )
+
+    # 聚合 per user
+    user_stats = {}
+    for s in sessions:
+        uid, username, sid, code, name, icash, fee, sd, ed, ca, rd = s
+        if uid not in user_stats:
+            user_stats[uid] = {
+                "user_id": uid, "username": username,
+                "session_count": 0, "total_pnl": 0.0,
+                "win_count": 0, "loss_count": 0, "round_trips": 0,
+                "total_equity_series": [],  # 用来算 sharpe
+            }
+        user_stats[uid]["session_count"] += 1
+        # 拉该 session 的 order + round_trip
+        orders = query_all(
+            "SELECT side, price, quantity, realized_pnl "
+            "FROM training_order WHERE session_id = ? "
+            "AND (pending_status = 'filled' OR pending_status IS NULL OR pending_status = '')",
+            (sid,),
+        )
+        # 简单聚合 pnl
+        for o in orders:
+            if o[0] == "SELL":
+                pnl = float(o[3] or 0)
+                user_stats[uid]["total_pnl"] += pnl
+                if pnl > 0: user_stats[uid]["win_count"] += 1
+                else: user_stats[uid]["loss_count"] += 1
+                user_stats[uid]["round_trips"] += 1
+        # 拉 equity
+        eqs = query_all(
+            "SELECT trade_date, total_equity FROM training_equity "
+            "WHERE session_id = ? ORDER BY trade_date ASC, id ASC",
+            (sid,),
+        )
+        for e in eqs:
+            user_stats[uid]["total_equity_series"].append((e[0], float(e[1])))
+
+    # 计算各项指标
+    items = []
+    for u in user_stats.values():
+        win_rate = (u["win_count"] / u["round_trips"] * 100) if u["round_trips"] else 0
+        # profit factor
+        win_sum = 0.0
+        loss_sum = 0.0
+        for sid_tuple in [(s[2],) for s in sessions if s[0] == u["user_id"]]:
+            for o in query_all(
+                "SELECT realized_pnl FROM training_order WHERE session_id = ? AND side = 'SELL' "
+                "AND (pending_status = 'filled' OR pending_status IS NULL OR pending_status = '')",
+                sid_tuple,
+            ):
+                pnl = float(o[0] or 0)
+                if pnl > 0: win_sum += pnl
+                else: loss_sum += abs(pnl)
+        pf = (win_sum / loss_sum) if loss_sum > 0 else (10.0 if win_sum > 0 else 0)
+        # sharpe
+        # 拼一个完整 equity 时间序列 (多 session 累加, 按 trade_date 排序, 同日取最后一根)
+        all_eqs = sorted(u["total_equity_series"], key=lambda x: x[0])
+        # sharpe 用 calc_risk_metrics
+        eq_dicts = [{"trade_date": d, "total_equity": v} for d, v in all_eqs]
+        # initial_cash 取该用户所有 session 第一个的 initial_cash
+        icash = 0
+        for s in sessions:
+            if s[0] == u["user_id"]:
+                icash = float(s[5]); break
+        rm = calc_risk_metrics(eq_dicts, initial_cash=icash)
+        items.append({
+            "user_id": u["user_id"], "username": u["username"],
+            "session_count": u["session_count"],
+            "total_pnl": round(u["total_pnl"], 2),
+            "win_rate": round(win_rate, 1),
+            "profit_factor": round(pf, 2),
+            "sharpe": rm["sharpe_ratio"],
+            "max_drawdown": rm["max_drawdown"],
+        })
+
+    # 按 metric 排序
+    items.sort(key=lambda x: (x[metric] if x[metric] is not None else -1e9), reverse=True)
+    # 加 rank
+    for i, it in enumerate(items):
+        it["rank"] = i + 1
+    return {
+        "metric": metric, "period": period,
+        "items": items[:limit],
+        "total_players": len(items),
+    }
+
 
 @router.get("/session/{session_id}")
 def session_stats(session_id: int, user: dict = Depends(get_current_train_user)):
@@ -491,6 +639,17 @@ def session_stats(session_id: int, user: dict = Depends(get_current_train_user))
 
     decisions.sort(key=lambda x: x["trade_date"])
 
+    # 2026-07-31 优化: 风险指标(基于该 session 的 equity 序列)
+    eq_rows = query_all(
+        "SELECT trade_date, total_equity FROM training_equity "
+        "WHERE session_id = ? ORDER BY trade_date ASC, id ASC",
+        (session_id,),
+    )
+    risk_metrics = calc_risk_metrics(
+        [{"trade_date": r[0], "total_equity": r[1]} for r in eq_rows],
+        initial_cash=sess[10] or 0,
+    )
+
     return {
         "session": {
             "id": sess[0], "code": sess[2], "name": sess[3],
@@ -521,6 +680,7 @@ def session_stats(session_id: int, user: dict = Depends(get_current_train_user))
             "realized_pnl": round(t["realized_pnl"], 2),
             "pnl_pct": round(t["pnl_pct"], 2),
         } for t in trips],
+        "risk_metrics": risk_metrics,  # 2026-07-31 优化: 风险指标
         "decisions": [{
             **{k: v for k, v in d.items() if k != "matched_trip"},
             "realized_pnl": (
@@ -568,6 +728,119 @@ def _safe_trip_summary(t: Dict | None) -> Dict | None:
         "pnl_pct": round(t["pnl_pct"], 2),
         "holding_days": t["holding_days"],
     }
+
+
+def calc_risk_metrics(equity: List[Dict], initial_cash: float) -> Dict:
+    """基于 equity 序列计算风险指标(2026-07-31 优化)。
+
+    输入: [{"trade_date": ..., "total_equity": ...}, ...] (按时间正序)
+    返回:
+      - max_drawdown: 最大回撤 (%)
+      - max_drawdown_days: 最大回撤持续天数
+      - sharpe_ratio: 年化夏普 (无风险利率 3%)
+      - sortino_ratio: 年化索提诺
+      - calmar_ratio: 年化卡玛 (年化收益 / |最大回撤|)
+      - annual_return: 年化收益 (%)
+      - annual_volatility: 年化波动 (%)
+    """
+    out = {
+        "max_drawdown": 0.0, "max_drawdown_days": 0,
+        "sharpe_ratio": None, "sortino_ratio": None,
+        "calmar_ratio": None,
+        "annual_return": 0.0, "annual_volatility": 0.0,
+    }
+    if not equity or len(equity) < 2 or not initial_cash:
+        return out
+
+    values = [float(e.get("total_equity") or 0) for e in equity]
+    if not values or values[0] <= 0:
+        return out
+
+    # 1. 最大回撤
+    peak = values[0]
+    max_dd = 0.0
+    max_dd_start_idx = 0
+    cur_dd_start = 0
+    max_dd_end_idx = 0
+    for i, v in enumerate(values):
+        if v > peak:
+            peak = v
+            cur_dd_start = i
+        dd = (peak - v) / peak
+        if dd > max_dd:
+            max_dd = dd
+            max_dd_start_idx = cur_dd_start
+            max_dd_end_idx = i
+    out["max_drawdown"] = round(max_dd * 100, 2)
+    if max_dd > 0 and max_dd_end_idx > max_dd_start_idx:
+        try:
+            d0 = datetime.strptime(equity[max_dd_start_idx]["trade_date"], "%Y-%m-%d")
+            d1 = datetime.strptime(equity[max_dd_end_idx]["trade_date"], "%Y-%m-%d")
+            out["max_drawdown_days"] = (d1 - d0).days
+        except Exception:
+            out["max_drawdown_days"] = 0
+
+    # 2. 日收益序列
+    daily_returns = []
+    for i in range(1, len(values)):
+        if values[i - 1] > 0:
+            r = (values[i] - values[i - 1]) / values[i - 1]
+            daily_returns.append(r)
+    if not daily_returns:
+        return out
+
+    # 3. 年化收益(按 252 交易日)
+    total_return = (values[-1] - initial_cash) / initial_cash
+    n_days = len(daily_returns)
+    if n_days > 0:
+        try:
+            d0 = datetime.strptime(equity[0]["trade_date"], "%Y-%m-%d")
+            d1 = datetime.strptime(equity[-1]["trade_date"], "%Y-%m-%d")
+            actual_days = max((d1 - d0).days, 1)
+        except Exception:
+            actual_days = n_days
+        annual_factor = 252.0 / max(actual_days, 1)
+        annual_return = ((1 + total_return) ** annual_factor - 1) * 100
+    out["annual_return"] = round(annual_return, 2)
+
+    # 4. 年化波动
+    if len(daily_returns) > 1:
+        mean_r = sum(daily_returns) / len(daily_returns)
+        var_r = sum((r - mean_r) ** 2 for r in daily_returns) / (len(daily_returns) - 1)
+        std_daily = var_r ** 0.5
+        annual_vol = std_daily * (252 ** 0.5) * 100
+    else:
+        annual_vol = 0.0
+    out["annual_volatility"] = round(annual_vol, 2)
+
+    # 5. 夏普(无风险利率 3%)
+    risk_free_annual = 3.0
+    if annual_vol > 0:
+        sharpe = (annual_return - risk_free_annual) / annual_vol
+        out["sharpe_ratio"] = round(sharpe, 3)
+    else:
+        out["sharpe_ratio"] = None
+
+    # 6. 索提诺(只算下行波动)
+    downside_returns = [r for r in daily_returns if r < 0]
+    if len(downside_returns) > 1:
+        d_mean = sum(downside_returns) / len(downside_returns)
+        d_var = sum((r - d_mean) ** 2 for r in downside_returns) / (len(downside_returns) - 1)
+        d_std = d_var ** 0.5
+        d_annual_vol = d_std * (252 ** 0.5) * 100
+        if d_annual_vol > 0:
+            sortino = (annual_return - risk_free_annual) / d_annual_vol
+            out["sortino_ratio"] = round(sortino, 3)
+        else:
+            out["sortino_ratio"] = None
+
+    # 7. 卡玛
+    if max_dd > 0:
+        out["calmar_ratio"] = round(annual_return / (max_dd * 100), 3)
+    else:
+        out["calmar_ratio"] = None
+
+    return out
 
 
 def _derive_style_tags(
