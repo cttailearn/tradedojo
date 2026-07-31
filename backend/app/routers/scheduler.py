@@ -1,4 +1,4 @@
-﻿"""
+"""
 定时调度 API —— 已扩展为按数据类型操作
 - 兼容旧端点:/status /start /stop /trigger /config /history
 - 新端点:  /jobs  /jobs/{task}  /jobs/{task}/trigger

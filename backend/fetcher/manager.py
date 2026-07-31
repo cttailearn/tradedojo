@@ -7,6 +7,11 @@ FetcherManager —— 统一入口,自动 failover + 自动切换主源
 - 记录每个源的可用状态(连续失败次数 / 累计成功次数)
 - 连续失败 ≥ 阈值 → 自动切换主源(避免反复浪费时间重试)
 - 主源恢复后 → 累计成功 ≥ 阈值 → 自动切回
+
+P1-7 修复 (2026-07-31): 主源选择持久化到 app_settings 表
+  - 启动时从 DB 读上次主源(若该源已注册)
+  - set_primary / 自动切换 都写回 DB
+  - 多实例部署时,任意一个实例切换主源,其他实例启动时也能看到
 """
 import logging
 import threading
@@ -16,12 +21,15 @@ from typing import Optional, List, Dict
 import pandas as pd
 
 from .base import BaseFetcher
+from db.database import get_conn
 
 logger = logging.getLogger("fetcher.manager")
 
 # 自动切换主源的阈值
 _AUTO_SWITCH_FAIL_THRESHOLD = 3      # 连续失败 N 次 → 切到备选
 _AUTO_SWITCH_RECOVER_THRESHOLD = 5  # 累计成功 N 次 → 切回主源
+# app_settings 表的 key
+_SETTINGS_KEY_PRIMARY = "fetcher.primary"
 
 
 class FetcherManager:
@@ -63,11 +71,55 @@ class FetcherManager:
         # 默认主源:baostock > akshare > tushare
         # 优先 baostock:免注册、稳定、不限速、含换手率。
         # akshare 作为 fallback(东方财富限流时切过来)。
+        default_primary = None
         for name in ("baostock", "akshare", "tushare"):
             if name in self._fetchers:
-                self._preferred = name
-                self._primary = name
+                default_primary = name
                 break
+        # P1-7 修复: 启动时从 DB 读上次主源(若该源已注册, 否则用默认)
+        persisted = self._load_persisted_primary()
+        if persisted and persisted in self._fetchers:
+            self._preferred = persisted
+            self._primary = persisted
+            logger.info(f"[FetcherManager] 从 DB 加载主源: {persisted}")
+        else:
+            self._preferred = default_primary
+            self._primary = default_primary
+            if persisted:
+                # DB 记录的主源已不可用(比如 tushare 卸载),回退到默认
+                logger.warning(
+                    f"[FetcherManager] DB 记录的主源 {persisted} 已不可用,回退到 {default_primary}"
+                )
+
+    @staticmethod
+    def _load_persisted_primary() -> Optional[str]:
+        """从 app_settings 表读上次保存的主源(2026-07-31 P1-7)。"""
+        try:
+            with get_conn() as conn:
+                row = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = ?",
+                    (_SETTINGS_KEY_PRIMARY,),
+                ).fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            logger.warning(f"[FetcherManager] 读 persisted primary 失败: {e}")
+            return None
+
+    @staticmethod
+    def _save_persisted_primary(name: str) -> None:
+        """把当前主源写入 app_settings 表(2026-07-31 P1-7)。"""
+        try:
+            with get_conn() as conn:
+                conn.execute(
+                    "INSERT INTO app_settings(key, value, updated_at) "
+                    "VALUES(?, ?, datetime('now', 'localtime')) "
+                    "ON CONFLICT(key) DO UPDATE SET "
+                    "  value = excluded.value, "
+                    "  updated_at = excluded.updated_at",
+                    (_SETTINGS_KEY_PRIMARY, name),
+                )
+        except Exception as e:
+            logger.warning(f"[FetcherManager] 写 persisted primary 失败: {e}")
 
     # ---------- 状态查询 ----------
     def list_sources(self) -> List[dict]:
@@ -101,7 +153,9 @@ class FetcherManager:
             self._preferred = name
             self._reset_consecutive_fail(name)
             logger.info(f"[FetcherManager] 主源切换为: {name}")
-            return True
+        # P1-7 修复: 持久化主源选择
+        self._save_persisted_primary(name)
+        return True
 
     def get_fetcher(self, name: Optional[str] = None) -> Optional[BaseFetcher]:
         """获取指定(或主)数据源实例"""
@@ -133,6 +187,8 @@ class FetcherManager:
             )
             with self._lock:
                 self._primary = self._preferred
+            # P1-7 修复: 自动切回时也持久化
+            self._save_persisted_primary(self._primary)
 
     def _on_failure(self, name: str, err: str) -> bool:
         """记录失败。返回 True 表示已自动切换主源。"""
@@ -159,6 +215,8 @@ class FetcherManager:
                 )
                 with self._lock:
                     self._primary = backup
+                # P1-7 修复: 自动切换时也持久化
+                self._save_persisted_primary(backup)
                 return True
         return False
 

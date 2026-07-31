@@ -179,8 +179,51 @@ def run_portfolio(
     plot: bool = False,
 ) -> pd.DataFrame:
     """
-    多股组合回测 - 等权持有
+    多股"独立回测" (2026-07-31 改名为 run_independent_loop) - 兼容保留.
+
+    ⚠️ 注意: 这是"每只股独立回测"取均值, 不是真组合回测!
+    - 每只股都从 100% 资金开始 (默认 initial_cash=1000000)
+    - 适用于: 评估"策略在多只股上的平均表现" / 横向对比
+    - 不适用于: 真实"一篮子资金调仓"场景 (如同时持有 5 只股 + 再平衡)
+
+    如需真组合回测(资金均分 N 份 → 加总净值), 请用 run_basket()。
     """
+    return _run_independent_loop_impl(
+        codes=codes,
+        strategy_class=strategy_class,
+        strategy_params=strategy_params,
+        start=start, end=end,
+        adjust_type=adjust_type,
+        initial_cash=initial_cash,
+        plot=plot,
+    )
+
+
+def run_independent_loop(
+    codes: list,
+    strategy_class: Type[bt.Strategy] = SmaCrossStrategy,
+    strategy_params: Optional[dict] = None,
+    start: str = "2020-01-01",
+    end: str = "2024-12-31",
+    adjust_type: str = "qfq",
+    initial_cash: float = None,
+    plot: bool = False,
+) -> pd.DataFrame:
+    """独立回测每只股(2026-07-31 起的"真名"), 保留 run_portfolio 别名."""
+    return _run_independent_loop_impl(
+        codes=codes,
+        strategy_class=strategy_class,
+        strategy_params=strategy_params,
+        start=start, end=end,
+        adjust_type=adjust_type,
+        initial_cash=initial_cash,
+        plot=plot,
+    )
+
+
+def _run_independent_loop_impl(
+    codes, strategy_class, strategy_params, start, end, adjust_type, initial_cash, plot,
+) -> pd.DataFrame:
     results = []
     for code in codes:
         try:
@@ -199,11 +242,95 @@ def run_portfolio(
     if df.empty:
         return df
 
-    print(f"\n{'='*60}\n【组合汇总】 {len(df)} 只股票")
+    print(f"\n{'='*60}\n【独立回测汇总】 {len(df)} 只股票")
     print(df[['code', 'pnl_pct', 'annual_return',
               'max_drawdown', 'sharpe']].to_string(index=False))
-    print(f"\n  组合平均收益:  {df['pnl_pct'].mean():.2f}%")
-    print(f"  组合中位收益:  {df['pnl_pct'].median():.2f}%")
-    print(f"  胜出比例:      {(df['pnl_pct'] > 0).sum() / len(df) * 100:.1f}%")
+    print(f"\n  平均收益:  {df['pnl_pct'].mean():.2f}%")
+    print(f"  中位收益:  {df['pnl_pct'].median():.2f}%")
+    print(f"  胜出比例:  {(df['pnl_pct'] > 0).sum() / len(df) * 100:.1f}%")
 
     return df
+
+
+def run_basket(
+    codes: list,
+    strategy_class: Type[bt.Strategy] = SmaCrossStrategy,
+    strategy_params: Optional[dict] = None,
+    start: str = "2020-01-01",
+    end: str = "2024-12-31",
+    adjust_type: str = "qfq",
+    initial_cash: float = None,
+    plot: bool = False,
+) -> dict:
+    """
+    真组合回测(2026-07-31 P1-11 新增) - 一篮子资金等权分仓 + 加总净值.
+
+    与 run_independent_loop 的区别:
+      - run_independent_loop: 每只股 100% 资金, 取平均
+      - run_basket: 资金均分 N 份进 N 只股, 加总求组合净值与收益
+
+    返回 dict 包含:
+      - items: 每只股明细 (含 pnl_pct, final_value 等)
+      - summary: 组合汇总 (总资金 / 总盈亏 / 加权夏普 / 胜出比例)
+    """
+    initial_cash = initial_cash or BacktestConfig.INITIAL_CASH
+    strategy_params = strategy_params or {}
+    n = len(codes)
+    if n == 0:
+        return {"items": [], "summary": {}, "initial_cash": initial_cash}
+    per_cash = initial_cash / n
+
+    results = []
+    for code in codes:
+        try:
+            r = run_backtest(
+                code=code, start=start, end=end, adjust_type=adjust_type,
+                initial_cash=per_cash,
+                strategy_class=strategy_class,
+                strategy_params=strategy_params,
+                plot=plot,
+            )
+            r["allocated_cash"] = per_cash
+            results.append(r)
+        except Exception as e:
+            logger.warning(f"{code} 回测失败: {e}")
+
+    if not results:
+        return {"items": [], "summary": {}, "initial_cash": initial_cash}
+
+    total_final = sum(r["final_value"] for r in results)
+    total_pnl = total_final - initial_cash
+    total_pnl_pct = total_pnl / initial_cash * 100
+    win_count = sum(1 for r in results if r.get("pnl", 0) > 0)
+    # 加权夏普: 按 allocated_cash 加权
+    sharpe_sum = sum(
+        (r.get("sharpe") or 0) * r.get("allocated_cash", per_cash) for r in results
+    )
+    weighted_sharpe = sharpe_sum / initial_cash if initial_cash else 0
+    # 平均最大回撤(算术平均, 简化)
+    avg_max_dd = sum(r.get("max_drawdown") or 0 for r in results) / len(results)
+
+    print(f"\n{'='*60}\n【真组合回测汇总】 {len(results)} 只股票 / 总资金 ¥{initial_cash:,.0f}")
+    for r in results:
+        print(f"  {r['code']:8s} 期末 ¥{r['final_value']:>12,.0f}  收益 {r['pnl_pct']:>6.2f}%")
+    print(f"\n  组合总盈亏:  ¥{total_pnl:>+12,.0f} ({total_pnl_pct:+.2f}%)")
+    print(f"  组合期末:    ¥{total_final:>12,.0f}")
+    print(f"  胜出比例:    {win_count}/{len(results)} ({win_count/len(results)*100:.1f}%)")
+    print(f"  加权夏普:    {weighted_sharpe:.3f}")
+    print(f"  平均最大回撤: {avg_max_dd:.2f}%")
+
+    return {
+        "items": results,
+        "summary": {
+            "count": len(results),
+            "initial_cash": initial_cash,
+            "per_cash": per_cash,
+            "total_final": round(total_final, 2),
+            "total_pnl": round(total_pnl, 2),
+            "total_pnl_pct": round(total_pnl_pct, 2),
+            "win_rate": round(win_count / len(results) * 100, 1),
+            "weighted_sharpe": round(weighted_sharpe, 3),
+            "avg_max_drawdown": round(avg_max_dd, 2),
+        },
+        "initial_cash": initial_cash,
+    }

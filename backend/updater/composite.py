@@ -80,8 +80,10 @@ class FetchAllUpdater(BaseUpdater):
         if not p.skip_enrich:
             self._emit(progress_callback, stage="stock_enrich", status="running")
             try:
-                # workers=0 → 用 K线 兜底 list_date,不调 profile API(全量场景下 profile 太慢)
-                r2 = StockEnrichUpdater({"limit": None, "workers": 0}).run()
+                # 2026-07-31 P1-10: 默认 workers=2(适度并发, ~30 分钟可补完 5000 只)
+                #   之前 workers=0 完全跳 Phase 2,导致大量股票 list_date 缺失
+                #   影响训练选股的 since_list_date 准确性
+                r2 = StockEnrichUpdater({"limit": None, "workers": 2}).run()
                 result["stages"]["stock_enrich"] = r2
             except Exception as e:
                 self.logger.warning(f"{self._log_prefix} stock_enrich 失败: {e}")
