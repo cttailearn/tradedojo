@@ -163,9 +163,10 @@ class FetcherManager:
 
     # ---------- 自动主源切换 ----------
     def _reset_consecutive_fail(self, name: str):
-        with self._lock:
-            if name in self._stats:
-                self._stats[name]["consecutive_fail"] = 0
+        # 注意:调用方(set_primary)已持有 self._lock,这里不再加锁
+        # (threading.Lock 不可重入,嵌套加锁会死锁)
+        if name in self._stats:
+            self._stats[name]["consecutive_fail"] = 0
 
     def _on_success(self, name: str):
         """记录成功,可能触发自动切回 preferred"""

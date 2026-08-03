@@ -141,7 +141,9 @@ CREATE TABLE IF NOT EXISTS training_user (
     display_name  TEXT,
     is_active     INTEGER DEFAULT 1,
     created_at    TEXT DEFAULT (datetime('now', 'localtime')),
-    last_login    TEXT
+    last_login    TEXT,
+    last_failed_login TEXT,
+    failed_attempts   INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_training_user_name ON training_user(username);
 

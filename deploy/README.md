@@ -27,8 +27,8 @@
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
-                       SQLite + WAL
-                      data/stock.db
+                        SQLite + WAL 或 PostgreSQL
+                      data/stock.db / STOCK_DB_DRIVER=postgres
 ```
 
 ## 文件清单
@@ -143,3 +143,12 @@ systemctl list-timers | grep certbot   # 查自动续期 cron
 - [ ] 每 90 天轮换 `STOCK_SECRET_KEY`(全员重新登录)
 - [ ] 升级:`cd /opt/tradedojo && git pull && systemctl restart tradedojo && cd frontend && npm run build`
 - [ ] 数据库膨胀时清理:`DELETE FROM update_log WHERE created_at < datetime('now','-30 day'); VACUUM;`
+
+## 登录防爆破(2026-08-03 起)
+
+管理端与训练端登录均启用账号锁定:**连续 5 次失败锁定 15 分钟**(返回 HTTP 429),锁定期间即使密码正确也拒绝。同时保留 IP 维度限速(`LOGIN_RATE_LIMIT=10/minute`)。
+
+- 训练端 `training_user` 新增列:`failed_attempts INTEGER DEFAULT 0`、`last_failed_login TEXT`。
+- **老库(SQLite/PG 均已部署的库)无需手动 ALTER**:后端启动/首次登录时 `_ensure_login_lock_columns()` 自动探测并补列(SQLite 用 `PRAGMA table_info`,PG 用 `information_schema.columns`),新装环境由 `schema.sql` / `schema_pg.sql` 直接建好。
+- 服务器升级只需 `git pull && systemctl restart tradedojo`,无需任何数据库手工操作。
+- 时区约定:失败时间戳由应用层(Python 本地时区)写入,与锁定窗口判断同基准,不依赖数据库 `localtime`。

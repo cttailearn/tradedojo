@@ -76,7 +76,8 @@ def test_primary_succeeds():
     # mock 注册时也要初始化 stats
     for n in mgr._fetchers:
         mgr._stats[n] = {"success": 0, "failed": 0,
-                         "last_used": None, "last_error": None}
+                         "last_used": None, "last_error": None,
+                         "consecutive_fail": 0}
 
     df = mgr.get_stock_list()
     assert len(df) == 1
@@ -98,7 +99,8 @@ def test_failover_to_backup():
     mgr._primary = "primary"
     for n in mgr._fetchers:
         mgr._stats[n] = {"success": 0, "failed": 0,
-                         "last_used": None, "last_error": None}
+                         "last_used": None, "last_error": None,
+                         "consecutive_fail": 0}
 
     df = mgr.get_stock_list()
     assert len(df) == 1
@@ -118,7 +120,8 @@ def test_all_fail_raises():
     mgr._primary = "a"
     for n in mgr._fetchers:
         mgr._stats[n] = {"success": 0, "failed": 0,
-                         "last_used": None, "last_error": None}
+                         "last_used": None, "last_error": None,
+                         "consecutive_fail": 0}
 
     try:
         mgr.get_stock_list()
@@ -141,7 +144,8 @@ def test_set_primary():
     mgr._primary = "a"
     for n in mgr._fetchers:
         mgr._stats[n] = {"success": 0, "failed": 0,
-                         "last_used": None, "last_error": None}
+                         "last_used": None, "last_error": None,
+                         "consecutive_fail": 0}
 
     assert mgr.get_primary() == "a"
     assert mgr.set_primary("b") is True
@@ -161,7 +165,8 @@ def test_test_source():
     mgr._primary = "ok"
     for n in mgr._fetchers:
         mgr._stats[n] = {"success": 0, "failed": 0,
-                         "last_used": None, "last_error": None}
+                         "last_used": None, "last_error": None,
+                         "consecutive_fail": 0}
 
     r1 = mgr.test_source("ok")
     assert r1["available"] is True
@@ -188,7 +193,8 @@ def test_list_sources():
     mgr._primary = "a"
     for n in mgr._fetchers:
         mgr._stats[n] = {"success": 0, "failed": 0,
-                         "last_used": None, "last_error": None}
+                         "last_used": None, "last_error": None,
+                         "consecutive_fail": 0}
 
     sources = mgr.list_sources()
     names = [s["name"] for s in sources]

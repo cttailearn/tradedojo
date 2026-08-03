@@ -190,6 +190,86 @@ def _ensure_token_table() -> None:
             execute(f"ALTER TABLE train_token ADD COLUMN {col_def}")
 
 
+def _ensure_login_lock_columns() -> None:
+    """老库兼容:training_user 补登录锁定列(SQLite/PG 老库自动 ALTER)。
+
+    注意:不能用 execute() 探测列(user_execute 吞异常,探测失败不抛,
+    补列永不执行)。改用列名清单判断:
+    - SQLite: PRAGMA table_info(表不存在返回空,不抛)
+    - PG:     information_schema.columns
+    """
+    try:
+        if is_postgres:
+            rows = query_all(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'training_user'"
+            )
+            cols = {r[0] for r in rows} if rows else set()
+        else:
+            rows = query_all("PRAGMA table_info(training_user)")
+            cols = {r[1] for r in rows} if rows else set()
+    except Exception:
+        return
+    for col_def, col_name in (
+        ("last_failed_login TEXT", "last_failed_login"),
+        ("failed_attempts INTEGER DEFAULT 0", "failed_attempts"),
+    ):
+        if col_name not in cols:
+            execute(f"ALTER TABLE training_user ADD COLUMN {col_def}")
+
+
+# =========================================================
+# 登录失败锁定 (2026-08-03: 防暴力破解, 与管理端同策略)
+# =========================================================
+LOCK_MAX_ATTEMPTS = 5
+LOCK_WINDOW_MINUTES = 15
+
+
+def _is_train_user_locked(
+    last_failed_login: Optional[str], failed_attempts: Optional[int],
+) -> bool:
+    """账号锁定判断: 失败次数 >= 阈值, 且最近一次失败仍在窗口内。"""
+    if not failed_attempts or failed_attempts < LOCK_MAX_ATTEMPTS:
+        return False
+    if not last_failed_login:
+        return False
+    try:
+        # PG 老数据可能是 'YYYY-MM-DD HH:MM:SS'(空格分隔),
+        # Python 3.10 的 fromisoformat 只接受 'T' 分隔, 统一替换
+        dt = datetime.fromisoformat(last_failed_login.replace(" ", "T"))
+        return datetime.now() - dt < timedelta(minutes=LOCK_WINDOW_MINUTES)
+    except Exception:
+        return False
+
+
+def _record_failed_login(uid: int) -> None:
+    try:
+        # COALESCE: PG 老库 ALTER 补列后存量行值为 NULL,NULL+1 仍是 NULL
+        # (SQLite 的 NULL+1 同理),显式按 0 起计
+        # 时间戳由 Python 生成(本地时区),与 _is_train_user_locked 里
+        # datetime.now() 同基准 —— 不能用 SQL datetime('now','localtime'):
+        # PG 容器时区(UTC)与本地(UTC+8)不一致会导致窗口判断永远失败
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        execute(
+            "UPDATE training_user SET failed_attempts = COALESCE(failed_attempts, 0) + 1, "
+            "last_failed_login = ? WHERE id = ?",
+            (now, uid),
+        )
+    except Exception as e:
+        log.warning("记录训练用户登录失败失败: %s", e)
+
+
+def _clear_failed_login(uid: int) -> None:
+    try:
+        execute(
+            "UPDATE training_user SET failed_attempts = 0, "
+            "last_failed_login = NULL WHERE id = ?",
+            (uid,),
+        )
+    except Exception as e:
+        log.warning("清零训练用户登录失败计数失败: %s", e)
+
+
 def _issue_train_token_pair(
     user_id: int,
     request: Optional[Request] = None,
@@ -292,22 +372,36 @@ def register(req: RegisterReq, request: Request, response: Response):
 @router.post("/login")
 @limiter.limit(settings.LOGIN_RATE_LIMIT)
 def login(req: LoginReq, request: Request, response: Response):
-    """登录(限速 + 错误文案统一 + 2026-07-31 改 cookie 模式)"""
+    """登录(限速 + 失败锁定 + 错误文案统一 + 2026-07-31 改 cookie 模式)"""
+    _ensure_login_lock_columns()
     row = query_one(
-        "SELECT id, username, display_name, password_hash, salt, is_active "
+        "SELECT id, username, display_name, password_hash, salt, is_active, "
+        "last_failed_login, failed_attempts "
         "FROM training_user WHERE username = ?",
         (req.username,),
     )
     if not row:
         log.info("[TRAIN-LOGIN] 用户不存在 username=%s", req.username)
         _generic_auth_error()
-    uid, username, display_name, stored_hash, salt, is_active = row
+    uid, username, display_name, stored_hash, salt, is_active, last_failed, attempts = row
     # is_active 单独告知? 否,统一文案
     if not is_active:
         log.info("[TRAIN-LOGIN] 账号停用 username=%s", req.username)
         _generic_auth_error()
+    # 防暴力破解: 账号级失败锁定 (2026-08-03, 与管理端同策略)
+    if _is_train_user_locked(last_failed, attempts):
+        log.warning("[TRAIN-LOGIN] 账号已锁定 username=%s", req.username)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="登录尝试次数过多, 请稍后再试",
+        )
     if not verify_password(req.password, stored_hash, salt):
+        _record_failed_login(uid)
+        log.info("[TRAIN-LOGIN] 密码错误 username=%s", req.username)
         _generic_auth_error()
+    # 登录成功 → 清零失败计数
+    if attempts or last_failed:
+        _clear_failed_login(uid)
     # 自动迁移旧格式到新格式
     if not stored_hash.startswith(f"pbkdf2_{HASH_ALGO}$"):
         try:

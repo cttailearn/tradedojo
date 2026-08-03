@@ -113,10 +113,15 @@ def update_last_login(user_id: int):
 
 def record_failed_login(user_id: int):
     with _orig_get_conn() as conn:
+        # 时间戳由 Python 生成(本地时区), 与 is_user_locked 里 datetime.now()
+        # 同基准 —— 不能用 SQL datetime('now','localtime'): PG 容器时区(UTC)
+        # 与本地(UTC+8)不一致会导致锁定窗口判断永远失败
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
             "UPDATE admin_user SET failed_attempts = failed_attempts + 1, "
-            "last_failed_login = datetime('now', 'localtime') WHERE id = ?",
-            (user_id,),
+            "last_failed_login = ? WHERE id = ?",
+            (now, user_id),
         )
 
 
@@ -129,7 +134,9 @@ def is_user_locked(user: dict, max_attempts: int = 5, window_minutes: int = 15) 
         return False
     try:
         from datetime import datetime, timedelta
-        dt = datetime.fromisoformat(last)
+        # 老数据可能是 'YYYY-MM-DD HH:MM:SS'(空格分隔),
+        # Python 3.10 的 fromisoformat 只接受 'T' 分隔, 统一替换
+        dt = datetime.fromisoformat(last.replace(" ", "T"))
         return datetime.now() - dt < timedelta(minutes=window_minutes)
     except Exception:
         return False
