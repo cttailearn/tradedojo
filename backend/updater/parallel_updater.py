@@ -91,11 +91,24 @@ class ParallelKlineUpdater:
             if not buffer:
                 return
             sql = """
-            INSERT OR REPLACE INTO kline_daily
+            -- ON CONFLICT 语法,兼容 SQLite/PostgreSQL
+            INSERT INTO kline_daily
             (code, trade_date, open, high, low, close, pre_close,
              change_amount, pct_change, volume, amount,
              turnover_rate, adjust_type, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (code, trade_date, adjust_type) DO UPDATE SET
+                open=excluded.open,
+                high=excluded.high,
+                low=excluded.low,
+                close=excluded.close,
+                pre_close=excluded.pre_close,
+                change_amount=excluded.change_amount,
+                pct_change=excluded.pct_change,
+                volume=excluded.volume,
+                amount=excluded.amount,
+                turnover_rate=excluded.turnover_rate,
+                updated_at=excluded.updated_at
             """
             rows = [
                 (r.code, r.trade_date, r.open, r.high, r.low, r.close,
@@ -509,7 +522,8 @@ class ParallelKlineUpdater:
                 JOIN kline_minute k ON s.code = k.code
                 WHERE s.is_active = 1
                 GROUP BY s.code, s.name
-                HAVING last_time < ?
+                -- HAVING 不能引用 SELECT 列别名,重复聚合表达式,兼容 SQLite/PostgreSQL
+                HAVING MAX(k.trade_time) < ?
             """, (today,))
 
         all_todo = list(rows_missing) + [(r[0], r[1]) for r in rows_outdated]
@@ -602,9 +616,17 @@ class ParallelKlineUpdater:
                 if df.empty:
                     continue
                 sql = """
-                INSERT OR REPLACE INTO index_daily
+                -- ON CONFLICT 语法,兼容 SQLite/PostgreSQL
+                INSERT INTO index_daily
                 (code, trade_date, open, high, low, close, volume, amount)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (code, trade_date) DO UPDATE SET
+                    open=excluded.open,
+                    high=excluded.high,
+                    low=excluded.low,
+                    close=excluded.close,
+                    volume=excluded.volume,
+                    amount=excluded.amount
                 """
                 with get_conn() as conn:
                     conn.executemany(sql, [
@@ -679,7 +701,8 @@ class ParallelKlineUpdater:
                 JOIN kline_daily k ON s.code = k.code
                 WHERE s.is_active = 1
                 GROUP BY s.code, s.name
-                HAVING last_date < ?
+                -- HAVING 不能引用 SELECT 列别名,重复聚合表达式,兼容 SQLite/PostgreSQL
+                HAVING MAX(k.trade_date) < ?
             """, (threshold,))
             report["kline_daily"]["outdated_stocks"] = [
                 (r[0], r[1], r[2]) for r in rows
@@ -703,7 +726,8 @@ class ParallelKlineUpdater:
                 JOIN kline_minute k ON s.code = k.code
                 WHERE s.is_active = 1
                 GROUP BY s.code, s.name
-                HAVING last_time < ?
+                -- HAVING 不能引用 SELECT 列别名,重复聚合表达式,兼容 SQLite/PostgreSQL
+                HAVING MAX(k.trade_time) < ?
             """, (yesterday,))
             report["kline_minute"]["outdated_stocks"] = [
                 (r[0], r[1], r[2]) for r in rows
@@ -911,10 +935,19 @@ class ParallelKlineUpdater:
         # 写入
         try:
             sql = """
-            INSERT OR REPLACE INTO kline_minute
+            -- ON CONFLICT 语法,兼容 SQLite/PostgreSQL
+            INSERT INTO kline_minute
             (code, trade_time, period, open, high, low,
              close, volume, amount, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (code, trade_time, period) DO UPDATE SET
+                open=excluded.open,
+                high=excluded.high,
+                low=excluded.low,
+                close=excluded.close,
+                volume=excluded.volume,
+                amount=excluded.amount,
+                updated_at=excluded.updated_at
             """
             rows = [
                 (r.code, r.trade_time, period,

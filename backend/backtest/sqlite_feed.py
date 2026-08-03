@@ -1,7 +1,7 @@
 """
-Backtrader 自定义数据源 - 从 SQLite 读取 K线
+Backtrader 自定义数据源 - 通过 db.database 统一连接层读取 K线
+(SQLite / PostgreSQL 双驱动,驱动由 STOCK_DB_DRIVER 决定)
 """
-import sqlite3
 from datetime import datetime
 from typing import Optional
 
@@ -10,6 +10,8 @@ from backtrader import date2num
 from backtrader.utils.py3 import with_metaclass
 
 import backtrader.metabase as metabase
+
+from db.database import get_conn, CompatConnection
 
 
 class SQLiteData(DataBase):
@@ -39,14 +41,19 @@ class SQLiteData(DataBase):
 
     def __init__(self):
         super().__init__()
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: Optional[CompatConnection] = None
+        self._conn_cm = None  # get_conn() 上下文管理器,stop() 时统一 __exit__ 关闭
         self._rows: list = []
         self._idx: int = 0
 
     def start(self):
         super().start()
-        self._conn = sqlite3.connect(self.p.db_path)
-        self._conn.row_factory = sqlite3.Row
+        # 经 db.database.get_conn() 获取统一连接:
+        # - sqlite 模式固定读取配置的 DB_PATH(stock.db),db_path 参数仅向后兼容保留;
+        #   若调用方显式传入的 db_path 与配置路径不同,以配置路径为准。
+        # - postgres 模式忽略 db_path,连接同一 PostgreSQL 库。
+        self._conn_cm = get_conn()
+        self._conn = self._conn_cm.__enter__()
 
         sql = """
         SELECT trade_date, open, high, low, close, volume,
@@ -69,8 +76,10 @@ class SQLiteData(DataBase):
         print(f"[Feed] 加载 {self.p.code} {len(self._rows)} 条记录")
 
     def stop(self):
-        if self._conn:
-            self._conn.close()
+        if self._conn_cm is not None:
+            self._conn_cm.__exit__(None, None, None)
+            self._conn = None
+            self._conn_cm = None
         super().stop()
 
     def _load(self):

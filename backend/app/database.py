@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.config import settings
-from db.database import get_conn as _orig_get_conn  # noqa: F401  复用
+from db.database import get_conn as _orig_get_conn, is_postgres  # noqa: F401  复用
 
 
 log = logging.getLogger("app.auth")
@@ -43,7 +43,10 @@ CREATE INDEX IF NOT EXISTS idx_admin_username ON admin_user(username);
 def init_user_db():
     """初始化 admin_user 表(含 must_change_pw 列的在线 ALTER 兼容)"""
     with _orig_get_conn() as conn:
-        conn.executescript(USER_SCHEMA)
+        if not is_postgres:
+            # SQLite:执行内联 DDL 建表(PG 下 admin_user 已由 schema_pg.sql 创建,
+            # 且 INTEGER PRIMARY KEY AUTOINCREMENT 是 SQLite 专有语法,PG 无法解析)
+            conn.executescript(USER_SCHEMA)
         # 老库兼容:补列
         for col_def, col_name in (
             ("must_change_pw INTEGER DEFAULT 0", "must_change_pw"),

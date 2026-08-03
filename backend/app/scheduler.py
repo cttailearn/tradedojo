@@ -497,9 +497,10 @@ def _ensure_trading_calendar() -> int:
             if not rows:
                 logger.info("[TradingCalendar] kline_daily 暂无数据, 跳过初始化")
                 return 0
-            # 批量 INSERT OR IGNORE
+            # 批量插入 + ON CONFLICT DO NOTHING,兼容 SQLite/PostgreSQL
             conn.executemany(
-                "INSERT OR IGNORE INTO trading_calendar(trade_date) VALUES(?)",
+                "INSERT INTO trading_calendar(trade_date) VALUES(?) "
+                "ON CONFLICT(trade_date) DO NOTHING",
                 [(r[0],) for r in rows],
             )
             # 同时从 index_daily 拿 (覆盖更全)
@@ -508,8 +509,10 @@ def _ensure_trading_calendar() -> int:
                 "WHERE trade_date IS NOT NULL"
             ).fetchall()
             if rows2:
+                # ON CONFLICT DO NOTHING,兼容 SQLite/PostgreSQL
                 conn.executemany(
-                    "INSERT OR IGNORE INTO trading_calendar(trade_date) VALUES(?)",
+                    "INSERT INTO trading_calendar(trade_date) VALUES(?) "
+                    "ON CONFLICT(trade_date) DO NOTHING",
                     [(r[0],) for r in rows2],
                 )
             cnt = conn.execute(

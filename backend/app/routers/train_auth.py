@@ -45,6 +45,7 @@ from db.database import (
     get_user_conn as get_conn,
     user_query_all as query_all,
     user_query_one as query_one,
+    is_postgres,
 )
 
 
@@ -164,18 +165,21 @@ TOKEN_TTL_DAYS = 7
 
 def _ensure_token_table() -> None:
     """建表 + 老库兼容补列 (revoked / refresh_jti)"""
-    execute(
-        "CREATE TABLE IF NOT EXISTS train_token("
-        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "  user_id INTEGER NOT NULL,"
-        "  token TEXT UNIQUE NOT NULL,"
-        "  refresh_jti TEXT,"
-        "  expires_at TEXT NOT NULL,"
-        "  revoked INTEGER DEFAULT 0,"
-        "  created_at TEXT DEFAULT (datetime('now', 'localtime'))"
-        ")"
-    )
-    # 老库兼容:补列
+    if not is_postgres:
+        # SQLite:内联 DDL 惰性建表;PG 下 train_token 已由 schema_pg.sql 创建,
+        # 且 INTEGER PRIMARY KEY AUTOINCREMENT 是 SQLite 专有语法,PG 无法解析
+        execute(
+            "CREATE TABLE IF NOT EXISTS train_token("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  user_id INTEGER NOT NULL,"
+            "  token TEXT UNIQUE NOT NULL,"
+            "  refresh_jti TEXT,"
+            "  expires_at TEXT NOT NULL,"
+            "  revoked INTEGER DEFAULT 0,"
+            "  created_at TEXT DEFAULT (datetime('now', 'localtime'))"
+            ")"
+        )
+    # 老库兼容:补列(PG 下列已存在,探测后跳过)
     for col_def, col_name in (
         ("refresh_jti TEXT", "refresh_jti"),
         ("revoked INTEGER DEFAULT 0", "revoked"),

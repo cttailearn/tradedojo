@@ -32,6 +32,7 @@ from db.database import (
     get_user_conn as get_conn,
     user_query_all as query_all,
     user_query_one as query_one,
+    is_postgres,
 )
 
 router = APIRouter(
@@ -196,15 +197,17 @@ def set_user_active(
     # 停用用户时, 同时下线该用户的全部 token
     if after_active == 0:
         try:
-            execute(
-                "CREATE TABLE IF NOT EXISTS train_token("
-                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "  user_id INTEGER NOT NULL,"
-                "  token TEXT UNIQUE NOT NULL,"
-                "  expires_at TEXT NOT NULL,"
-                "  created_at TEXT DEFAULT (datetime('now', 'localtime'))"
-                ")"
-            )
+            if not is_postgres:
+                # SQLite:惰性建表;PG 下 train_token 已由 schema_pg.sql 创建
+                execute(
+                    "CREATE TABLE IF NOT EXISTS train_token("
+                    "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    "  user_id INTEGER NOT NULL,"
+                    "  token TEXT UNIQUE NOT NULL,"
+                    "  expires_at TEXT NOT NULL,"
+                    "  created_at TEXT DEFAULT (datetime('now', 'localtime'))"
+                    ")"
+                )
             execute("DELETE FROM train_token WHERE user_id = ?", (user_id,))
         except Exception:
             pass
@@ -245,15 +248,17 @@ def reset_user_password(
     )
     # 强制下线该用户的所有 session (train_token)
     try:
-        execute(
-            "CREATE TABLE IF NOT EXISTS train_token("
-            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "  user_id INTEGER NOT NULL,"
-            "  token TEXT UNIQUE NOT NULL,"
-            "  expires_at TEXT NOT NULL,"
-            "  created_at TEXT DEFAULT (datetime('now', 'localtime'))"
-            ")"
-        )
+        if not is_postgres:
+            # SQLite:惰性建表;PG 下 train_token 已由 schema_pg.sql 创建
+            execute(
+                "CREATE TABLE IF NOT EXISTS train_token("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  user_id INTEGER NOT NULL,"
+                "  token TEXT UNIQUE NOT NULL,"
+                "  expires_at TEXT NOT NULL,"
+                "  created_at TEXT DEFAULT (datetime('now', 'localtime'))"
+                ")"
+            )
         execute("DELETE FROM train_token WHERE user_id = ?", (user_id,))
     except Exception:
         pass

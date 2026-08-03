@@ -91,10 +91,15 @@ class CheckpointManager:
         self.completed.add(code)
         self.failed.pop(code, None)
         with get_conn() as conn:
+            # ON CONFLICT 语法,兼容 SQLite/PostgreSQL
             conn.execute(
-                f"INSERT OR REPLACE INTO {self.table_name} "
+                f"INSERT INTO {self.table_name} "
                 f"(code, status, row_count, retry_count, last_error, updated_at) "
-                f"VALUES (?, 'success', ?, 0, NULL, ?)",
+                f"VALUES (?, 'success', ?, 0, NULL, ?) "
+                f"ON CONFLICT(code) DO UPDATE SET "
+                f"status=excluded.status, row_count=excluded.row_count, "
+                f"retry_count=excluded.retry_count, last_error=excluded.last_error, "
+                f"updated_at=excluded.updated_at",
                 (code, row_count, datetime.now().isoformat())
             )
         self._maybe_save()
@@ -103,10 +108,15 @@ class CheckpointManager:
         retry = self.failed.get(code, {"retry": 0})["retry"] + 1
         self.failed[code] = {"error": error[:200], "retry": retry}
         with get_conn() as conn:
+            # ON CONFLICT 语法,兼容 SQLite/PostgreSQL
             conn.execute(
-                f"INSERT OR REPLACE INTO {self.table_name} "
+                f"INSERT INTO {self.table_name} "
                 f"(code, status, row_count, retry_count, last_error, updated_at) "
-                f"VALUES (?, 'failed', 0, ?, ?, ?)",
+                f"VALUES (?, 'failed', 0, ?, ?, ?) "
+                f"ON CONFLICT(code) DO UPDATE SET "
+                f"status=excluded.status, row_count=excluded.row_count, "
+                f"retry_count=excluded.retry_count, last_error=excluded.last_error, "
+                f"updated_at=excluded.updated_at",
                 (code, retry, error[:200], datetime.now().isoformat())
             )
         self._maybe_save()

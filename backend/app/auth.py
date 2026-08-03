@@ -221,7 +221,11 @@ def clear_train_cookies(response: Response):
 # ---------- Refresh token 持久化(简单表) ----------
 def _ensure_refresh_table():
     """首次调用前确保 refresh_token 表存在(供吊销/审计)。"""
-    from db.database import execute
+    from db.database import execute, is_postgres
+    if is_postgres:
+        # PG 模式下 refresh_token 已由 schema_pg.sql 创建;
+        # INTEGER PRIMARY KEY AUTOINCREMENT 是 SQLite 专有语法,PG 无法解析
+        return
     execute(
         "CREATE TABLE IF NOT EXISTS refresh_token ("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"

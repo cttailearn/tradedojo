@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.deps import require_admin
 from fetcher import fetcher_manager
-from db.database import get_conn
+from db.database import get_conn, table_names
 
 logger = logging.getLogger("app.sources")
 
@@ -46,11 +46,8 @@ def switch_source(req: SwitchRequest):
         try:
             with get_conn() as conn:
                 # 删除所有 checkpoint_* 表的完成记录(失败的重试也清)
-                cur = conn.execute(
-                    "SELECT name FROM sqlite_master "
-                    "WHERE type = 'table' AND name LIKE 'checkpoint_%'"
-                )
-                tables = [r[0] for r in cur.fetchall()]
+                # 用 table_names() 按驱动列出(checkpoint_* 动态表,sqlite_master/pg_tables)
+                tables = table_names("checkpoint_%")
                 total_deleted = 0
                 for t in tables:
                     cur2 = conn.execute(f"DELETE FROM {t}")

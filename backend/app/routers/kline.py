@@ -4,7 +4,7 @@ K线查询 API(数据库只读)
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from db.database import query_all, query_one
+from db.database import execute, query_all, query_one
 from app.deps import require_admin
 
 router = APIRouter(prefix="/api/kline", tags=["K线"], dependencies=[Depends(require_admin)])
@@ -86,5 +86,6 @@ def delete_kline(code: str, adjust: Optional[str] = None):
     params = [code]
     if adjust:
         sql += " AND adjust_type = ?"; params.append(adjust)
-    cnt = query_one(f"SELECT changes() FROM ({sql})", params)[0]
-    return {"deleted": cnt}
+    # 直接执行 DELETE 用 rowcount 取受影响行数,兼容 SQLite/PostgreSQL(旧写法用 changes())
+    deleted = execute(sql, params)
+    return {"deleted": deleted}

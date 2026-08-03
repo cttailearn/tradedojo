@@ -1,6 +1,7 @@
 """
 项目全局配置
 """
+import os
 from pathlib import Path
 
 # ---------- 路径配置 ----------
@@ -19,6 +20,53 @@ USER_DB_PATH = DATA_DIR / "user.db"
 # 自动创建目录
 for d in [DATA_DIR, CHECKPOINT_DIR, LOG_DIR]:
     d.mkdir(parents=True, exist_ok=True)
+
+
+# ---------- 数据库驱动配置 ----------
+# 默认 SQLite(行为不变);设 STOCK_DB_DRIVER=postgres 切换到 PostgreSQL。
+# PG 连接参数:STOCK_DB_URL 优先,否则用 HOST/PORT/NAME/USER/PASSWORD 拼装。
+# sqlite 模式下仍使用上方 DB_PATH / USER_DB_PATH 两个独立库。
+def _env_int(name: str, default: int) -> int:
+    """读取整型环境变量,非法或缺失时回退默认值"""
+    raw = os.environ.get(name, "")
+    try:
+        return int(raw.strip()) if raw.strip() else default
+    except ValueError:
+        return default
+
+
+class DBConfig:
+    """数据库驱动配置(STOCK_DB_* 环境变量,默认 sqlite)"""
+
+    DRIVER: str = os.environ.get("STOCK_DB_DRIVER", "sqlite").strip().lower() or "sqlite"
+    URL: str | None = (os.environ.get("STOCK_DB_URL") or "").strip() or None
+    HOST: str = os.environ.get("STOCK_DB_HOST", "localhost").strip() or "localhost"
+    PORT: int = _env_int("STOCK_DB_PORT", 5432)
+    NAME: str = os.environ.get("STOCK_DB_NAME", "tradedojo").strip() or "tradedojo"
+    USER: str = os.environ.get("STOCK_DB_USER", "tradedojo").strip() or "tradedojo"
+    PASSWORD: str = os.environ.get("STOCK_DB_PASSWORD", "").strip()
+
+    @property
+    def is_postgres(self) -> bool:
+        return self.DRIVER == "postgres"
+
+    @property
+    def conninfo(self) -> str:
+        """psycopg3 连接串;STOCK_DB_URL 优先。sqlite 模式下不用于连接。"""
+        if self.URL:
+            return self.URL
+        parts = [
+            f"host={self.HOST}",
+            f"port={self.PORT}",
+            f"dbname={self.NAME}",
+            f"user={self.USER}",
+        ]
+        if self.PASSWORD:
+            parts.append(f"password={self.PASSWORD}")
+        return " ".join(parts)
+
+
+db_config = DBConfig()
 
 
 # ---------- 采集配置 ----------

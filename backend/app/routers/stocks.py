@@ -4,7 +4,7 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from db.database import query_all, query_one
+from db.database import execute, query_all, query_one
 from app.deps import require_admin
 
 router = APIRouter(prefix="/api/stocks", tags=["股票"], dependencies=[Depends(require_admin)])
@@ -175,10 +175,11 @@ def stock_detail(code: str):
 @router.delete("/{code}")
 def deactivate_stock(code: str):
     """标记股票为退市(is_active=0),不真正删除"""
-    affected = query_one(
-        "SELECT changes() FROM (UPDATE stock_list SET is_active=0 WHERE code=?)",
+    # 直接执行 UPDATE 用 rowcount 取受影响行数,兼容 SQLite/PostgreSQL(旧写法用 changes())
+    affected = execute(
+        "UPDATE stock_list SET is_active=0 WHERE code=?",
         (code,),
     )
-    if not affected or affected[0] == 0:
+    if not affected or affected == 0:
         raise HTTPException(status_code=404, detail=f"股票 {code} 不存在")
     return {"message": f"已标记 {code} 为退市"}

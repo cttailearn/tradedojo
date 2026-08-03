@@ -43,10 +43,20 @@ class IndexDailyUpdater(BaseUpdater):
                 if df is None or df.empty:
                     continue
                 sql = """
-                INSERT OR REPLACE INTO index_daily
+                -- ON CONFLICT 语法,兼容 SQLite/PostgreSQL
+                INSERT INTO index_daily
                     (code, name, trade_date, open, high, low, close,
                      volume, amount, pct_change)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (code, trade_date) DO UPDATE SET
+                    name=excluded.name,
+                    open=excluded.open,
+                    high=excluded.high,
+                    low=excluded.low,
+                    close=excluded.close,
+                    volume=excluded.volume,
+                    amount=excluded.amount,
+                    pct_change=excluded.pct_change
                 """
                 with get_conn() as conn:
                     conn.executemany(sql, [

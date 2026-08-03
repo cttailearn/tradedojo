@@ -18,8 +18,13 @@ _BACKEND = Path(__file__).parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+# 先注入仓库根 .env,再 import config(否则 STOCK_DB_* / STOCK_SECRET_KEY 等读不到)
+from dotenv import load_dotenv
+_PROJECT_ROOT = Path(_BACKEND).parent
+load_dotenv(_PROJECT_ROOT / ".env", override=False)
+
 from config import LOG_DIR, PROJECT_ROOT
-from db.database import init_db, table_count, query_all
+from db.database import init_db, table_count, table_names
 
 
 def setup_logging(level: str = "INFO"):
@@ -47,9 +52,9 @@ def cmd_init(args):
     print("="*60)
     init_db(verbose=True)
 
-    tables = query_all("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = table_names()
     print(f"\n表清单({len(tables)}):")
-    for (t,) in tables:
+    for t in tables:
         cnt = table_count(t)
         print(f"  - {t:<30} {cnt:>10,} 行")
 
