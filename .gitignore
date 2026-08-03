@@ -46,3 +46,11 @@ Kronos-base/
 .idea/
 .DS_Store
 Thumbs.db
+
+# ===== AI 工具本地状态(不入库) =====
+# OhMyOpenCode 工作计划/状态
+.omo/
+# codegraph 知识图谱索引
+.codegraph/
+# Trae IDE 私有配置
+.trae/
