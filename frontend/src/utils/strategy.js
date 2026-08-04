@@ -37,6 +37,20 @@ export const BUILTIN_STRATEGIES = [
     params: [],
   },
   {
+    id: 'builtin_ma_alignment',
+    name: '均线多头排列',
+    description: '快线上穿中线(金叉) + 中线高于慢线(多头结构) + 放量确认时买入；死叉卖出，当日买入次日开盘卖出(T+1)。',
+    type: 'ma_alignment',
+    builtin: true,
+    params: [
+      { key: 'fast', label: '快线周期', type: 'number', default: 5, min: 2, max: 60 },
+      { key: 'mid', label: '中线周期', type: 'number', default: 10, min: 3, max: 120 },
+      { key: 'slow', label: '慢线周期', type: 'number', default: 20, min: 5, max: 250 },
+      { key: 'vol_period', label: '量能均线周期', type: 'number', default: 20, min: 5, max: 120 },
+      { key: 'vol_ratio', label: '放量倍数', type: 'number', default: 1.2, min: 1.0, max: 5.0, step: 0.1 },
+    ],
+  },
+  {
     id: 'builtin_meanrev',
     name: '均值回归策略',
     description: '当价格低于均线一定比例时买入，回归均线时卖出。适合震荡市场。',
@@ -126,8 +140,11 @@ export function strategyToBacktestParams(strategy) {
   for (const p of strategy.params || []) {
     params[p.key] = p.default
   }
+  // 2026-08-04: 支持后端全部策略类型,不再把自定义硬映射成 sma
+  const type = strategy.type
+  const supported = ['sma', 'momentum', 'buy_hold', 'ma_alignment']
   return {
-    strategy: strategy.type === 'buy_hold' ? 'buy_hold' : (strategy.type === 'momentum' ? 'momentum' : 'sma'),
+    strategy: supported.includes(type) ? type : 'sma',
     ...params,
   }
 }

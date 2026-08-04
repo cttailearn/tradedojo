@@ -61,6 +61,7 @@ def run_backtest(
     strategy_params: Optional[dict] = None,
     plot: bool = True,
     plot_path: Optional[str] = None,
+    period: int = 240,
 ) -> dict:
     """
     运行单股回测
@@ -80,6 +81,7 @@ def run_backtest(
         db_path=db_path, code=code,
         start_date=start, end_date=end,
         adjust_type=adjust_type,
+        period=period,
     )
     cerebro.adddata(data)
 

@@ -100,12 +100,17 @@ class BacktestRequest(BaseModel):
     adjust: str = "qfq"
     cash: float = 100000
     strategy: str = "sma"
+    period: int = 240  # 2026-08-04: 240=日线, 30/60=分钟
     fast: int = 5
     slow: int = 20
     lookback: int = 20
     thresh: float = 0.05
     stop_loss: float = 0.08
     take_profit: float = 0.20
+    # 2026-08-04: 均线多头排列策略参数
+    mid: int = 10
+    vol_period: int = 20
+    vol_ratio: float = 1.2
     plot: bool = False
 
 

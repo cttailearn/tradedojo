@@ -37,6 +37,7 @@ class SQLiteData(DataBase):
         ('start_date', None),
         ('end_date', None),
         ('adjust_type', 'qfq'),
+        ('period', 240),  # 2026-08-04: 240=日线(kline_daily), 30/60=分钟(kline_minute)
     )
 
     def __init__(self):
@@ -55,25 +56,42 @@ class SQLiteData(DataBase):
         self._conn_cm = get_conn()
         self._conn = self._conn_cm.__enter__()
 
-        sql = """
-        SELECT trade_date, open, high, low, close, volume,
-               amount, turnover_rate
-        FROM kline_daily
-        WHERE code = ? AND adjust_type = ?
-        """
-        params = [self.p.code, self.p.adjust_type]
-        if self.p.start_date:
-            sql += " AND trade_date >= ?"
-            params.append(self.p.start_date)
-        if self.p.end_date:
-            sql += " AND trade_date <= ?"
-            params.append(self.p.end_date)
-        sql += " ORDER BY trade_date ASC"
+        is_minute = int(self.p.period or 240) in (30, 60)
+        if is_minute:
+            sql = """
+            SELECT trade_time, open, high, low, close, volume,
+                   amount, NULL AS turnover_rate
+            FROM kline_minute
+            WHERE code = ? AND period = ?
+            """
+            params = [self.p.code, int(self.p.period)]
+            if self.p.start_date:
+                sql += " AND trade_time >= ?"
+                params.append(self.p.start_date)
+            if self.p.end_date:
+                sql += " AND trade_time <= ?"
+                params.append(f"{self.p.end_date} 23:59:59")
+            sql += " ORDER BY trade_time ASC"
+        else:
+            sql = """
+            SELECT trade_date, open, high, low, close, volume,
+                   amount, turnover_rate
+            FROM kline_daily
+            WHERE code = ? AND adjust_type = ?
+            """
+            params = [self.p.code, self.p.adjust_type]
+            if self.p.start_date:
+                sql += " AND trade_date >= ?"
+                params.append(self.p.start_date)
+            if self.p.end_date:
+                sql += " AND trade_date <= ?"
+                params.append(self.p.end_date)
+            sql += " ORDER BY trade_date ASC"
 
         cur = self._conn.execute(sql, params)
         self._rows = cur.fetchall()
         self._idx = 0
-        print(f"[Feed] 加载 {self.p.code} {len(self._rows)} 条记录")
+        print(f"[Feed] 加载 {self.p.code} period={self.p.period} {len(self._rows)} 条记录")
 
     def stop(self):
         if self._conn_cm is not None:
@@ -91,8 +109,11 @@ class SQLiteData(DataBase):
         self._idx += 1
 
         # 时间
+        is_minute = int(self.p.period or 240) in (30, 60)
+        raw_dt = row['trade_time'] if is_minute else row['trade_date']
         try:
-            dt = datetime.strptime(row['trade_date'], '%Y-%m-%d')
+            dt = (datetime.strptime(raw_dt, '%Y-%m-%d %H:%M:%S')
+                  if is_minute else datetime.strptime(raw_dt, '%Y-%m-%d'))
         except (ValueError, TypeError):
             return False
         self.lines.datetime[0] = date2num(dt)

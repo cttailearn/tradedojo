@@ -22,6 +22,7 @@ _STRAT_MAP = {
     "sma": "SmaCrossStrategy",
     "momentum": "MomentumStrategy",
     "buy_hold": "BuyHoldStrategy",
+    "ma_alignment": "MaAlignmentStrategy",  # 2026-08-04
 }
 
 
@@ -35,6 +36,14 @@ def _build_params(req: BacktestRequest) -> dict:
             "stop_loss": req.stop_loss,
             "take_profit": req.take_profit,
         }
+    if req.strategy == "ma_alignment":
+        return {
+            "fast": req.fast,
+            "mid": req.mid,
+            "slow": req.slow,
+            "vol_period": req.vol_period,
+            "vol_ratio": req.vol_ratio,
+        }
     return {}
 
 
@@ -43,12 +52,13 @@ def run_backtest(req: BacktestRequest):
     """同步单股回测"""
     from backtest.runner import run_backtest as _run
     from backtest.strategies import (
-        SmaCrossStrategy, MomentumStrategy, BuyHoldStrategy,
+        SmaCrossStrategy, MomentumStrategy, BuyHoldStrategy, MaAlignmentStrategy,
     )
     classes = {
         "sma": SmaCrossStrategy,
         "momentum": MomentumStrategy,
         "buy_hold": BuyHoldStrategy,
+        "ma_alignment": MaAlignmentStrategy,
     }
     if req.strategy not in classes:
         raise HTTPException(status_code=400, detail=f"未知策略: {req.strategy}")
@@ -60,6 +70,7 @@ def run_backtest(req: BacktestRequest):
             strategy_class=classes[req.strategy],
             strategy_params=_build_params(req),
             plot=req.plot,
+            period=req.period,
         )
         result["executed_at"] = datetime.now().isoformat(timespec="seconds")
         return {"data": result}
@@ -168,12 +179,13 @@ def run_backtest_async(req: BacktestRequest):
     """异步单股回测,适合批量场景"""
     from backtest.runner import run_backtest as _run
     from backtest.strategies import (
-        SmaCrossStrategy, MomentumStrategy, BuyHoldStrategy,
+        SmaCrossStrategy, MomentumStrategy, BuyHoldStrategy, MaAlignmentStrategy,
     )
     classes = {
         "sma": SmaCrossStrategy,
         "momentum": MomentumStrategy,
         "buy_hold": BuyHoldStrategy,
+        "ma_alignment": MaAlignmentStrategy,
     }
     if req.strategy not in classes:
         raise HTTPException(status_code=400, detail=f"未知策略: {req.strategy}")
@@ -185,6 +197,7 @@ def run_backtest_async(req: BacktestRequest):
             strategy_class=classes[req.strategy],
             strategy_params=_build_params(req),
             plot=req.plot,
+            period=req.period,
         )
 
     tid = task_manager.submit(f"回测-{req.code}", _do)

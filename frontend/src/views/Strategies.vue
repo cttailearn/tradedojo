@@ -112,6 +112,7 @@
                 <el-option label="SMA 双均线" value="sma" />
                 <el-option label="动量策略" value="momentum" />
                 <el-option label="买入持有" value="buy_hold" />
+                <el-option label="均线多头排列" value="ma_alignment" />
                 <el-option label="自定义" value="custom" />
               </el-select>
             </el-form-item>

@@ -20,6 +20,14 @@
               <el-option label="SMA 双均线" value="sma" />
               <el-option label="动量策略" value="momentum" />
               <el-option label="买入持有" value="buy_hold" />
+              <el-option label="均线多头排列" value="ma_alignment" />
+            </el-select>
+          </el-form-item></el-col>
+          <el-col :span="8"><el-form-item label="K线周期">
+            <el-select v-model="form.period">
+              <el-option label="日线" :value="240" />
+              <el-option label="30分钟" :value="30" />
+              <el-option label="60分钟" :value="60" />
             </el-select>
           </el-form-item></el-col>
           <el-col :span="8"><el-form-item label="初始资金">
@@ -46,6 +54,13 @@
             <el-col :span="8"><el-form-item label="动量阈值"><el-input-number v-model="form.thresh" :min="0.01" :max="0.5" :step="0.01" :precision="2" /></el-form-item></el-col>
             <el-col :span="8"><el-form-item label="止损"><el-input-number v-model="form.stop_loss" :min="0.01" :max="0.5" :step="0.01" :precision="2" /></el-form-item></el-col>
             <el-col :span="8"><el-form-item label="止盈"><el-input-number v-model="form.take_profit" :min="0.05" :max="1.0" :step="0.05" :precision="2" /></el-form-item></el-col>
+          </template>
+          <template v-if="form.strategy === 'ma_alignment'">
+            <el-col :span="8"><el-form-item label="快线周期"><el-input-number v-model="form.fast" :min="2" :max="60" /></el-form-item></el-col>
+            <el-col :span="8"><el-form-item label="中线周期"><el-input-number v-model="form.mid" :min="3" :max="120" /></el-form-item></el-col>
+            <el-col :span="8"><el-form-item label="慢线周期"><el-input-number v-model="form.slow" :min="5" :max="250" /></el-form-item></el-col>
+            <el-col :span="8"><el-form-item label="量能均线周期"><el-input-number v-model="form.vol_period" :min="5" :max="120" /></el-form-item></el-col>
+            <el-col :span="8"><el-form-item label="放量倍数"><el-input-number v-model="form.vol_ratio" :min="1.0" :max="5.0" :step="0.1" :precision="1" /></el-form-item></el-col>
           </template>
         </el-row>
         <el-form-item>
@@ -507,7 +522,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import { backtestApi, kronosApi } from '@/api/modules'
-import { BUILTIN_STRATEGIES, loadStrategies } from '@/utils/strategy'
+import { BUILTIN_STRATEGIES, loadStrategies, strategyToBacktestParams } from '@/utils/strategy'
 
 const route = useRoute()
 
@@ -526,9 +541,10 @@ const optimizableStrategies = computed(() =>
 
 // 单股回测
 const form = reactive({
-  code: '000001', strategy: 'sma', cash: 100000,
+  code: '000001', strategy: 'sma', cash: 100000, period: 240,
   start: '2022-01-01', end: '2024-12-31', adjust: 'qfq',
   fast: 5, slow: 20, lookback: 20, thresh: 0.05, stop_loss: 0.08, take_profit: 0.20,
+  mid: 10, vol_period: 20, vol_ratio: 1.2,
 })
 
 // 组合回测
@@ -587,15 +603,10 @@ function getStrategy(id) {
   return allStrategies.value.find(s => s.id === id)
 }
 
+// 2026-08-04: 统一把策略(内置/自定义)转成后端回测参数,
+// 不再硬映射 custom→sma(修复"假自定义"缺陷)
 function strategyToPayload(s) {
-  if (!s || s.builtin) {
-    // 内置策略使用原有逻辑
-    return null
-  }
-  const payload = { strategy: s.type === 'buy_hold' ? 'buy_hold' : (s.type === 'momentum' ? 'momentum' : 'sma') }
-  for (const p of s.params || []) {
-    payload[p.key] = p.default
-  }
+  const payload = strategyToBacktestParams(s)
   return payload
 }
 
@@ -637,21 +648,8 @@ async function runCompare() {
       const payload = { ...compareForm }
       delete payload.strategies
 
-      if (s.builtin) {
-        // 内置策略直接使用 id
-        const strategyType = s.type
-        payload.strategy = strategyType
-        // 设置默认参数
-        for (const p of s.params || []) {
-          payload[p.key] = p.default
-        }
-      } else {
-        // 自定义策略
-        payload.strategy = s.type === 'buy_hold' ? 'buy_hold' : (s.type === 'momentum' ? 'momentum' : 'sma')
-        for (const p of s.params || []) {
-          payload[p.key] = p.default
-        }
-      }
+      // 2026-08-04: 统一走 strategyToPayload(修复 custom 类型 400 / 假自定义)
+      Object.assign(payload, strategyToPayload(s))
 
       const r = await backtestApi.single(payload)
       return { strategyName: s.name, strategyId: s.id, ...(r.data || r) }
@@ -711,11 +709,8 @@ async function runOptimize() {
       const payload = { ...optForm }
       delete payload.strategy
 
-      const strategyType = s.type
-      payload.strategy = strategyType
-      for (const p of s.params || []) {
-        payload[p.key] = p.default
-      }
+      // 2026-08-04: 统一走 strategyToPayload(修复 custom 类型 400)
+      Object.assign(payload, strategyToPayload(s))
       // 覆盖为网格值
       for (const p of optParams.value) {
         payload[p.key] = combo[p.key]
