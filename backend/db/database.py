@@ -449,11 +449,17 @@ def get_conn():
     """stock.db 连接 (股票数据 + admin_user + 管理端 refresh_token)。
 
     PG 模式下连接同一个 PostgreSQL 库(路径参数被忽略)。
+
+    块内任何异常都回滚 + 向上抛出,绝不静默吞掉 —— 与 get_user_conn
+    同样的防御(2026-08-04 P0-3):
+    训练 start_session 走的是这个连接,如果不 raise,
+    `cur = conn.execute(INSERT)` 抛数据库异常时控制流会错位,
+    在 line 842 触发 UnboundLocalError。
     """
     conn = _open_conn(DB_PATH)
     try:
         yield conn
-    except Exception:
+    except BaseException:
         conn.rollback()
         raise
     finally:
