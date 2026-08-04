@@ -27,6 +27,8 @@ from jose import JWTError
 from pydantic import BaseModel, Field, field_validator
 
 from app.auth import (
+    TRAIN_ACCESS_COOKIE,
+    TRAIN_REFRESH_COOKIE,
     clear_train_cookies,
     create_access_token,
     decode_token,
