@@ -465,18 +465,24 @@ def get_user_conn():
     """user.db 连接 (训练用户/钱包/兑换码/会话/订单/管理员审计/训练 token)。
 
     PG 模式下连接同一个 PostgreSQL 库(路径参数被忽略)。
-    注意:保持历史行为——块内异常仅回滚,不向上抛出。
+    块内任何异常都回滚 + 向上抛出,绝不静默吞掉 —— 否则下游
+    会进入"控制流错位"的灾难模式,典型表现:
+    - INSERT 失败被吞掉, cur 仍是上一次赋值的对象;
+    - 后续 `cur.lastrowid` 抛 AttributeError, sid 名字未绑定;
+    - 函数继续往下, 在 `query_one(..., (sid,))` 抛 UnboundLocalError,
+      最终被全局 handler 兜成无定位信息的 500。
+
+    2026-08-04 P0-3 修复: 非 HTTPException 也 raise, 补齐 2026-08-03 那次
+    "预存缺陷"修复的另一半 (原代码只 raise 了 HTTPException)。
     """
     conn = _open_conn(USER_DB_PATH)
     try:
         yield conn
-    except HTTPException:
-        # 业务控制流异常必须向上传播(FastAPI 才能返回 4xx),
-        # 否则会被误吞成 500(预存缺陷,2026-08-03 修复)
+    except BaseException:
+        # BaseException 覆盖 Exception + KeyboardInterrupt/SystemExit,
+        # 避免任何控制流异常被吞; 同时保持 FastAPI 4xx 与 5xx 一致传播
         conn.rollback()
         raise
-    except Exception:
-        conn.rollback()
     finally:
         conn.close()
 

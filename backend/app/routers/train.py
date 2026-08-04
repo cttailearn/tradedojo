@@ -747,6 +747,29 @@ def list_my_sessions(user: dict = Depends(get_current_train_user)):
     }
 
 
+@router.get("/industries")
+def list_train_industries():
+    """训练端可用的行业列表(无需 admin token)。
+
+    2026-08-04 P0-3 修复:
+    - 旧版 Setup.vue 直接调 `/api/stocks/industries`, 该接口强制 require_admin,
+      训练用户无 admin token → 401;
+    - 前端 axios 拦截器把"在 /train/* 页面的非 /train/ URL 401"误判为
+      train auth 失败 → 清空 train state → 用户被踢回登录页
+      ("用户端登录已过期")。
+    - 现在训练端自带 industries 端点, 走 train cookie 即可拿到行业列表,
+      不再触发误判。
+
+    复用 stock_list 行业统计 (与 /api/stocks/industries 一致), 行为等价。
+    """
+    rows = stock_query_all(
+        "SELECT industry, COUNT(*) FROM stock_list "
+        "WHERE is_active = 1 AND industry IS NOT NULL AND industry != '' "
+        "GROUP BY industry ORDER BY 2 DESC"
+    )
+    return {"items": [{"industry": r[0], "count": r[1]} for r in rows]}
+
+
 @router.post("/sessions/start")
 @limiter.limit("20/minute")
 def start_session(req: TrainingSetupRequest, request: Request, response: Response, user: dict = Depends(get_current_train_user)):
@@ -758,93 +781,122 @@ def start_session(req: TrainingSetupRequest, request: Request, response: Respons
     if req.is_portfolio:
         return _start_portfolio_sessions(req, user, session_cost)
 
-    with get_conn() as conn:
-        # 读取当前钱包余额(不扣训练费,仅检查余额是否充足)
-        row = conn.execute(
-            "SELECT balance FROM training_wallet WHERE user_id = ?",
-            (user["id"],),
-        ).fetchone()
-        if row is None:
-            # 钱包不存在则初始化
-            conn.execute(
-                "INSERT INTO training_wallet(user_id, balance) VALUES(?, 0)",
-                (user["id"],),
-            )
-            balance_after = 0.0
-        else:
-            balance_after = float(row[0] or 0)
+    # 2026-08-04 P0-3 修复: 防御性兜底,即使 get_user_conn 的"吞异常"行为被
+    # 彻底修好 (现在已 raise), 也要保证 sid 未定义时给出友好 5xx 而不是
+    # UnboundLocalError。这是"双保险", 单点修复 get_user_conn 也可消除
+    # 这个 UnboundLocalError, 但保留防御让外部 INSERT 失败时仍能定位。
+    sid: Optional[int] = None
+    balance_after: float = 0.0
 
-        # 训练可用资金上限 = 钱包余额(2026-07-31 起不再扣训练费,也不再保留余量)
-        max_initial = max(0.0, balance_after)
-        if req.initial_cash is None or req.initial_cash <= 0:
-            # 未提供则默认 = max_initial
-            session_initial_cash = max_initial
-        else:
-            if req.initial_cash > max_initial:
+    try:
+        with get_conn() as conn:
+            # 读取当前钱包余额(不扣训练费,仅检查余额是否充足)
+            row = conn.execute(
+                "SELECT balance FROM training_wallet WHERE user_id = ?",
+                (user["id"],),
+            ).fetchone()
+            if row is None:
+                # 钱包不存在则初始化
+                conn.execute(
+                    "INSERT INTO training_wallet(user_id, balance) VALUES(?, 0)",
+                    (user["id"],),
+                )
+                balance_after = 0.0
+            else:
+                balance_after = float(row[0] or 0)
+
+            # 训练可用资金上限 = 钱包余额(2026-07-31 起不再扣训练费,也不再保留余量)
+            max_initial = max(0.0, balance_after)
+            if req.initial_cash is None or req.initial_cash <= 0:
+                # 未提供则默认 = max_initial
+                session_initial_cash = max_initial
+            else:
+                if req.initial_cash > max_initial:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"初始资金 ¥ {req.initial_cash:.2f} 超过钱包余额 ¥ {max_initial:.2f}"
+                        ),
+                    )
+                session_initial_cash = float(req.initial_cash)
+
+            # 初始资金下限 1000 元(跟前端 Setup.vue 校验一致)
+            if session_initial_cash < 1000:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"初始资金 ¥ {req.initial_cash:.2f} 超过钱包余额 ¥ {max_initial:.2f}"
+                        f"初始资金需 ≥ ¥1000,当前钱包余额 ¥{max_initial:.2f} (请先兑换充值)"
                     ),
                 )
-            session_initial_cash = float(req.initial_cash)
 
-        # 初始资金下限 1000 元(跟前端 Setup.vue 校验一致)
-        if session_initial_cash < 1000:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"初始资金需 ≥ ¥1000,当前钱包余额 ¥ {max_initial:.2f} (请先兑换充值)"
-                ),
+            # 随机选股(使用后端确定的 initial_cash 覆盖入参,保持 _pick_random_stock 一致)
+            req_dict = req.model_dump()
+            req_dict["initial_cash"] = session_initial_cash
+            req_sub = TrainingSetupRequest(**req_dict)
+            stock = _pick_random_stock(req_sub)
+
+            # 初始揭示 = 训练开始日,但若 start_date 是节假日/周末没有 K 线,
+            # 自动顺延到该股票的下个实际交易日,否则前端会拿到空 K 线图
+            # 注意:用户会话在 user_tx 内,但 kline_daily 在 stock.db,必须单独查
+            kline_row = stock_query_one(
+                "SELECT MIN(trade_date) FROM kline_daily "
+                "WHERE code = ? AND adjust_type = 'qfq' AND trade_date >= ?",
+                (stock["code"], req.start_date),
+            )
+            current_dt = (kline_row[0] if kline_row and kline_row[0] else req.start_date)
+
+            cur = conn.execute(
+                """INSERT INTO training_session(
+                    user_id, code, name, industry, market,
+                    start_date, end_date, lookback_months, initial_cash,
+                    commission_rate, min_commission, stamp_tax, transfer_fee,
+                    allow_split, max_positions, per_trade_amount,
+                    allow_chinext, allow_st, allow_kcb, allow_bj,
+                    total_fee_paid, status, reveal_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)""",
+                (user["id"], stock["code"], stock["name"], stock["industry"], stock["market"],
+                 req.start_date, req.end_date, req.lookback_months, session_initial_cash,
+                 req.commission_rate, req.min_commission, req.stamp_tax, req.transfer_fee,
+                 int(req.allow_split), req.max_positions, req.per_trade_amount,
+                 int(req.allow_chinext), int(req.allow_st), int(req.allow_kcb), int(req.allow_bj),
+                 session_cost, current_dt),
+            )
+            sid_raw = cur.lastrowid
+            if not sid_raw:
+                # 不太可能发生(只有极少数 PG/SQLite 边界场景),但防御一下
+                raise HTTPException(
+                    status_code=500,
+                    detail="创建训练会话失败: 数据库未返回新会话 ID",
+                )
+            sid = int(sid_raw)
+            # 初始权益 = 本场训练的初始资金(钱包不再被扣训练费)
+            conn.execute(
+                "INSERT INTO training_equity(session_id, trade_date, cash, market_value, total_equity) "
+                "VALUES(?, ?, ?, 0, ?)",
+                (sid, current_dt, session_initial_cash, session_initial_cash),
             )
 
-        # 随机选股(使用后端确定的 initial_cash 覆盖入参,保持 _pick_random_stock 一致)
-        req_dict = req.model_dump()
-        req_dict["initial_cash"] = session_initial_cash
-        req_sub = TrainingSetupRequest(**req_dict)
-        stock = _pick_random_stock(req_sub)
-
-        # 初始揭示 = 训练开始日,但若 start_date 是节假日/周末没有 K 线,
-        # 自动顺延到该股票的下个实际交易日,否则前端会拿到空 K 线图
-        # 注意:用户会话在 user_tx 内,但 kline_daily 在 stock.db,必须单独查
-        cur = stock_query_one(
-            "SELECT MIN(trade_date) FROM kline_daily "
-            "WHERE code = ? AND adjust_type = 'qfq' AND trade_date >= ?",
-            (stock["code"], req.start_date),
+        # 重新读取
+        row = query_one("SELECT * FROM training_session WHERE id = ?", (sid,))
+        session = dict(zip(SESSION_COLS, row))
+        view = _build_session_view(session)
+        view["session_cost"] = session_cost
+        view["wallet_balance_after"] = balance_after
+        return view
+    except HTTPException:
+        # FastAPI 业务 4xx: 原样上抛
+        raise
+    except Exception as e:
+        # 2026-08-04 P0-3: 不再让 UnboundLocalError 之类的内部错误裸出,
+        # 至少在 5xx 响应里给出可读 message + 让 error_id 能在日志里 grep。
+        log.exception(
+            "[start_session] 创建训练会话失败 user_id=%s code=%s err=%s",
+            user.get("id"), getattr(req, "__dict__", {}).get("start_date"), e,
         )
-        current_dt = (cur[0] if cur and cur[0] else req.start_date)
-
-        cur = conn.execute(
-            """INSERT INTO training_session(
-                user_id, code, name, industry, market,
-                start_date, end_date, lookback_months, initial_cash,
-                commission_rate, min_commission, stamp_tax, transfer_fee,
-                allow_split, max_positions, per_trade_amount,
-                allow_chinext, allow_st, allow_kcb, allow_bj,
-                total_fee_paid, status, reveal_date
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)""",
-            (user["id"], stock["code"], stock["name"], stock["industry"], stock["market"],
-             req.start_date, req.end_date, req.lookback_months, session_initial_cash,
-             req.commission_rate, req.min_commission, req.stamp_tax, req.transfer_fee,
-             int(req.allow_split), req.max_positions, req.per_trade_amount,
-             int(req.allow_chinext), int(req.allow_st), int(req.allow_kcb), int(req.allow_bj),
-             session_cost, current_dt),
+        raise HTTPException(
+            status_code=500,
+            detail=f"创建训练会话失败,请稍后重试 ({type(e).__name__})",
         )
-        sid = cur.lastrowid
-        # 初始权益 = 本场训练的初始资金(钱包不再被扣训练费)
-        conn.execute(
-            "INSERT INTO training_equity(session_id, trade_date, cash, market_value, total_equity) "
-            "VALUES(?, ?, ?, 0, ?)",
-            (sid, current_dt, session_initial_cash, session_initial_cash),
-        )
-
-    # 重新读取
-    row = query_one("SELECT * FROM training_session WHERE id = ?", (sid,))
-    session = dict(zip(SESSION_COLS, row))
-    view = _build_session_view(session)
-    view["session_cost"] = session_cost
-    view["wallet_balance_after"] = balance_after
-    return view
 
 
 def _start_portfolio_sessions(req: TrainingSetupRequest, user: dict, session_cost: float) -> dict:
