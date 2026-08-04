@@ -10,6 +10,7 @@ class TaskType(str, Enum):
     STOCK_ENRICH = "stock_enrich"   # 股票信息增强(写入 stock_list 扩展列)
     INDEX_DAILY = "index_daily"     # 主要指数日线
     KLINE_DAILY = "kline_daily"     # 日 K 线(含 mode=full/smart)
+    KLINE_PERIODIC = "kline_periodic"  # 周K/月K 本地聚合(kline_daily → kline_minute)
 
     # ---------- 组合型任务(面向终端用户的两个入口) ----------
     FETCH_ALL = "fetch_all"         # 全量拉取:股票列表 + 行业 + K线 + 指数

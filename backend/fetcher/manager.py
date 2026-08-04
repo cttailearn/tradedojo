@@ -48,11 +48,13 @@ class FetcherManager:
         from fetcher.data_fetcher import AKShareFetcher
         from fetcher.baostock_fetcher import BaostockFetcher
         from fetcher.tushare_fetcher import TushareFetcher
+        from fetcher.sina_fetcher import SinaFetcher
 
         candidates = [
             ("akshare", AKShareFetcher()),
             ("baostock", BaostockFetcher()),
             ("tushare", TushareFetcher()),
+            ("sina", SinaFetcher()),
         ]
 
         for name, fetcher in candidates:
@@ -264,14 +266,21 @@ class FetcherManager:
         last_error = None
         for idx, name in enumerate(ordered):
             fetcher = self._fetchers[name]
+            method = getattr(fetcher, method_name, None)
+            if method is None:
+                # 该源未实现此方法:静默跳过,不记日志不记失败
+                continue
             t0 = time.time()
             try:
-                method = getattr(fetcher, method_name)
                 result = method(*args, **kwargs)
                 self._on_success(name)
                 if idx > 0 or name != self._preferred:
                     logger.info(f"[FetcherManager] 调用 {method_name} 由 {name} 完成")
                 return result
+            except NotImplementedError:
+                # 该源实现了但明确不支持此能力(如新浪仅提供 30/60 分钟线):
+                # 静默跳过,不计失败
+                continue
             except Exception as e:
                 last_error = e
                 err = f"{type(e).__name__}: {str(e)[:80]}"
@@ -293,6 +302,14 @@ class FetcherManager:
     ) -> pd.DataFrame:
         return self._call_with_failover(
             "get_daily_kline", code, start_date, end_date, adjust
+        )
+
+    def get_minute_kline(
+        self, code: str, period: int = 5,
+        start_date: Optional[str] = None, end_date: Optional[str] = None,
+    ) -> pd.DataFrame:
+        return self._call_with_failover(
+            "get_minute_kline", code, period, start_date, end_date
         )
 
     def get_index_daily(self, code: str = "sh000001") -> pd.DataFrame:

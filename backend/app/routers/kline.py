@@ -14,12 +14,37 @@ router = APIRouter(prefix="/api/kline", tags=["K线"], dependencies=[Depends(req
 def query_kline(
     code: str = Query(..., description="股票代码,例如 000001"),
     adjust: str = Query("qfq", description="复权方式: qfq / hfq"),
+    period: int = Query(240, description="K线周期: 240=日线, 30/60=分钟, 10080=周线, 43200=月线"),
     start: Optional[str] = Query(None, description="起始日期 YYYY-MM-DD"),
     end: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
 ):
-    """分页查询 K线"""
+    """分页查询 K线(period=240 走 kline_daily,其余走 kline_minute)"""
+    if period in (30, 60, 10080, 43200):
+        total = query_one(
+            "SELECT COUNT(*) FROM kline_minute WHERE code = ? AND period = ?",
+            (code, period),
+        )[0]
+        rows = query_all(
+            """SELECT trade_time, open, high, low, close, volume, amount
+                FROM kline_minute
+                WHERE code = ? AND period = ?
+                ORDER BY trade_time ASC LIMIT ? OFFSET ?""",
+            (code, period, limit, offset),
+        )
+        items = [
+            {
+                "trade_date": r[0][:10], "trade_time": r[0],
+                "open": r[1], "high": r[2], "low": r[3],
+                "close": r[4], "volume": r[5], "amount": r[6],
+            }
+            for r in rows
+        ]
+        return {"total": total, "limit": limit, "offset": offset, "items": items}
+    if period != 240:
+        raise HTTPException(400, "不支持的周期,可选 240(日) / 30 / 60(分钟) / 10080(周) / 43200(月)")
+
     where = ["code = ?", "adjust_type = ?"]
     params = [code, adjust]
     if start:

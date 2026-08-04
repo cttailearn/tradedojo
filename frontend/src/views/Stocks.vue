@@ -195,7 +195,14 @@
       @closed="onKlineClosed"
     >
       <div class="toolbar" style="margin-bottom: 8px;">
-        <el-select v-model="klineForm.adjust" style="width:100px;" @change="loadKline(1)">
+        <el-select v-model="klineForm.period" style="width:110px;" @change="loadKline(1)">
+          <el-option label="日K" :value="240" />
+          <el-option label="60分钟" :value="60" />
+          <el-option label="30分钟" :value="30" />
+          <el-option label="周K" :value="10080" />
+          <el-option label="月K" :value="43200" />
+        </el-select>
+        <el-select v-if="klineForm.period === 240" v-model="klineForm.adjust" style="width:100px;" @change="loadKline(1)">
           <el-option label="前复权" value="qfq" />
           <el-option label="后复权" value="hfq" />
         </el-select>
@@ -226,20 +233,24 @@
       </div>
 
       <el-table :data="klineList" stripe height="320" style="margin-top:8px;">
-        <el-table-column prop="trade_date" label="日期" width="110" fixed sortable />
+        <el-table-column :prop="klineForm.period === 240 ? 'trade_date' : 'trade_time'" :label="klineForm.period === 240 ? '日期' : '日期/时间'" width="140" fixed sortable>
+          <template #default="{ row }">
+            {{ klineTimeLabel(row) }}
+          </template>
+        </el-table-column>
         <el-table-column prop="open" label="开盘" align="right" :formatter="kFmt2" />
         <el-table-column prop="high" label="最高" align="right" :formatter="kFmt2" />
         <el-table-column prop="low" label="最低" align="right" :formatter="kFmt2" />
         <el-table-column prop="close" label="收盘" align="right" :formatter="kFmt2" />
-        <el-table-column prop="pre_close" label="昨收" align="right" :formatter="kFmt2" />
-        <el-table-column prop="change_amount" label="涨跌额" align="right">
+        <el-table-column v-if="klineForm.period === 240" prop="pre_close" label="昨收" align="right" :formatter="kFmt2" />
+        <el-table-column v-if="klineForm.period === 240" prop="change_amount" label="涨跌额" align="right">
           <template #default="{ row }">
             <span :class="(row.change_amount || 0) >= 0 ? 'up' : 'down'">
               {{ kFmt2(null, null, row.change_amount) }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="涨跌幅" align="right" sortable :sort-method="(a, b) => Number(a.pct_change || 0) - Number(b.pct_change || 0)">
+        <el-table-column v-if="klineForm.period === 240" label="涨跌幅" align="right" sortable :sort-method="(a, b) => Number(a.pct_change || 0) - Number(b.pct_change || 0)">
           <template #default="{ row }">
             <span :class="Number(row.pct_change || 0) >= 0 ? 'up' : 'down'">
               {{ Number(row.pct_change || 0).toFixed(2) }}%
@@ -248,7 +259,7 @@
         </el-table-column>
         <el-table-column prop="volume" label="成交量(手)" align="right" :formatter="kFmtInt" sortable />
         <el-table-column prop="amount" label="成交额(元)" align="right" :formatter="kFmtAmt" sortable />
-        <el-table-column prop="turnover_rate" label="换手率%" align="right" :formatter="kFmt2" sortable />
+        <el-table-column v-if="klineForm.period === 240" prop="turnover_rate" label="换手率%" align="right" :formatter="kFmt2" sortable />
       </el-table>
       <div style="margin-top:8px; text-align:right;">
         <el-pagination
@@ -296,6 +307,7 @@ const klineForm = reactive({
   code: '',
   name: '',
   adjust: 'qfq',
+  period: 240,
   start: '',
   end: '',
   page: 1,
@@ -366,6 +378,7 @@ function goKline(code, name) {
   klineForm.code = code
   klineForm.name = name || ''
   klineForm.adjust = 'qfq'
+  klineForm.period = 240
   klineForm.start = ''
   klineForm.end = ''
   klineForm.page = 1
@@ -445,6 +458,7 @@ async function loadKline(page) {
   try {
     const data = await klineApi.query({
       code: klineForm.code,
+      period: klineForm.period,
       adjust: klineForm.adjust,
       start: klineForm.start,
       end: klineForm.end,
@@ -501,7 +515,7 @@ function renderKlineChart() {
     // 防御:任何字段为 null/undefined 都会让 echarts 抛错,做归一化
   // 防御:任何字段为 null/undefined 都会让 echarts 抛错,做归一化
   const safe = (v, d = null) => (v == null || (typeof v === 'number' && isNaN(v)) ? d : v)
-  const dates = klineList.value.map((r) => r.trade_date).filter(Boolean)
+  const dates = klineList.value.map((r) => klineTimeLabel(r)).filter(Boolean)
   if (!dates.length) {
     klineChart.clear()
     return
@@ -523,7 +537,7 @@ function renderKlineChart() {
     })
   const ma5 = calcMA(5), ma10 = calcMA(10), ma20 = calcMA(20)
   klineChart.setOption({
-    title: { text: `${klineForm.code} ${klineForm.adjust === 'qfq' ? '前复权' : '后复权'}`, left: 'center' },
+    title: { text: `${klineForm.code} ${klinePeriodLabel()}`, left: 'center' },
     legend: { data: ['K线', 'MA5', 'MA10', 'MA20', '成交量'], top: 30 },
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross', link: [{ xAxisIndex: 'all' }] } },
     grid: [
@@ -585,19 +599,42 @@ function formatDate(s) {
   return str
 }
 
+const PERIOD_LABELS = { 240: '日K', 60: '60分钟', 30: '30分钟', 10080: '周K', 43200: '月K' }
+
+/** 当前周期名称 */
+function klinePeriodLabel() {
+  if (klineForm.period === 240) {
+    return klineForm.adjust === 'qfq' ? '前复权' : '后复权'
+  }
+  return PERIOD_LABELS[klineForm.period] || '日K'
+}
+
+/** K线时间标签:日线用 trade_date,分钟线用 trade_time(带时分秒),周/月截取日期前 10 位 */
+function klineTimeLabel(r) {
+  if (klineForm.period === 240) return r.trade_date
+  const t = r.trade_time || ''
+  return klineForm.period >= 10080 ? t.slice(0, 10) : t
+}
+
 function exportKlineCsv() {
   if (!klineList.value.length) return
-  const headers = ['日期', '开盘', '最高', '最低', '收盘', '昨收', '涨跌额', '涨跌幅%', '成交量(手)', '成交额(元)', '换手率%']
-  const rows = klineList.value.map((r) => [
-    r.trade_date, r.open, r.high, r.low, r.close, r.pre_close,
-    r.change_amount, r.pct_change, r.volume, r.amount, r.turnover_rate,
-  ])
+  const isDaily = klineForm.period === 240
+  const headers = isDaily
+    ? ['日期', '开盘', '最高', '最低', '收盘', '昨收', '涨跌额', '涨跌幅%', '成交量(手)', '成交额(元)', '换手率%']
+    : ['日期/时间', '开盘', '最高', '最低', '收盘', '成交量(手)', '成交额(元)']
+  const rows = klineList.value.map((r) => {
+    const cols = [isDaily ? r.trade_date : klineTimeLabel(r), r.open, r.high, r.low, r.close]
+    if (isDaily) cols.push(r.pre_close, r.change_amount, r.pct_change)
+    cols.push(r.volume, r.amount)
+    if (isDaily) cols.push(r.turnover_rate)
+    return cols
+  })
   const csv = [headers, ...rows].map((cols) => cols.join(',')).join('\n')
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${klineForm.code}_${klineForm.adjust}_${klineForm.start || 'all'}_${klineForm.end || 'now'}.csv`
+  a.download = `${klineForm.code}_${klinePeriodLabel()}_${klineForm.start || 'all'}_${klineForm.end || 'now'}.csv`
   a.click()
   URL.revokeObjectURL(url)
   ElMessage.success('已导出 CSV')

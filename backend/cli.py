@@ -113,6 +113,21 @@ def cmd_update_minute_smart(args):
     print(f"\n[OK] 分钟K线智能更新完成: {result}")
 
 
+def cmd_update_periodic(args):
+    """聚合周K/月K(从 kline_daily 本地聚合写入 kline_minute)"""
+    from updater.kline_periodic import KlinePeriodicUpdater
+    codes = [c.strip() for c in args.codes.split(",")] if args.codes else None
+    if not all(codes or []):
+        codes = None
+    updater = KlinePeriodicUpdater({
+        "period": args.period,
+        "adjust": args.adjust,
+        "codes": codes,
+    })
+    result = updater.run()
+    print(f"\n[OK] 周期K线完成: {result}")
+
+
 def cmd_update_enrich(args):
     """丰富股票信息(行业+上市日期)"""
     from updater.parallel_updater import ParallelKlineUpdater
@@ -419,11 +434,23 @@ def main():
 
     p3b2 = sub_u.add_parser("minute-smart", help="智能更新分钟K线(仅缺失)")
     p3b2.add_argument("--period", type=int, default=5,
-                     choices=[1, 5, 15, 30, 60])
+                      choices=[1, 5, 15, 30, 60])
     p3b2.add_argument("--days", type=int, default=30)
     p3b2.add_argument("--workers", type=int, default=4)
     p3b2.add_argument("--limit", type=int, default=None)
     p3b2.set_defaults(func=cmd_update_minute_smart)
+
+    p3p = sub_u.add_parser("periodic", help="聚合周K/月K(本地聚合,不拉取网络)")
+    p3p.add_argument("--period", default="both",
+                     choices=["weekly", "monthly", "both"],
+                     help="weekly=周K, monthly=月K, both=两者(默认)")
+    p3p.add_argument("--adjust", default="qfq",
+                     choices=["qfq", "hfq", ""],
+                     help="复权方式(对应 kline_daily 中的 adjust_type)")
+    p3p.add_argument("--codes", default=None,
+                     help="限定股票代码,逗号分隔,如 000001,600519;默认全部")
+    p3p.set_defaults(func=cmd_update_periodic)
+
 
     p3e = sub_u.add_parser("enrich", help="丰富股票信息(行业+上市日期)")
     p3e.add_argument("--workers", type=int, default=4,

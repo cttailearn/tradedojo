@@ -916,7 +916,7 @@ class ParallelKlineUpdater:
                 end = datetime.now().strftime("%Y-%m-%d")
                 start = (datetime.now() -
                          timedelta(days=days_back)).strftime("%Y-%m-%d")
-                df = self.fetcher.get_minute_kline(
+                df = fetcher_manager.get_minute_kline(
                     code, period=period,
                     start_date=start, end_date=end
                 )

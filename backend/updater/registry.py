@@ -33,6 +33,11 @@ def _load_kline_daily():
     return KlineDailyUpdater, KlineDailyParams
 
 
+def _load_kline_periodic():
+    from .kline_periodic import KlinePeriodicUpdater, KlinePeriodicParams
+    return KlinePeriodicUpdater, KlinePeriodicParams
+
+
 def _load_fetch_all():
     from .composite import FetchAllUpdater, FetchAllParams
     return FetchAllUpdater, FetchAllParams
@@ -50,6 +55,7 @@ REGISTER: Dict[TaskType, Tuple[Type[BaseUpdater], type]] = {
     TaskType.STOCK_ENRICH: _load_stock_enrich(),
     TaskType.INDEX_DAILY:  _load_index_daily(),
     TaskType.KLINE_DAILY:  _load_kline_daily(),
+    TaskType.KLINE_PERIODIC: _load_kline_periodic(),
     # ---------- 组合型 updater(面向用户的两个入口) ----------
     TaskType.FETCH_ALL:    _load_fetch_all(),
     TaskType.SYNC_LATEST:  _load_sync_latest(),
@@ -63,6 +69,7 @@ LEGACY_TASK_ALIAS = {
     "stock_list":   (TaskType.STOCK_LIST,   {}),
     "index":        (TaskType.INDEX_DAILY,  {}),
     "kline_daily":  (TaskType.KLINE_DAILY,  {"mode": "full"}),
+    "periodic":     (TaskType.KLINE_PERIODIC, {}),
     "enrich":       (TaskType.STOCK_ENRICH, {}),
     "daily_smart":  (TaskType.SYNC_LATEST,  {"days_back": 10}),
     # 旧 API 完整一键更新 → 新全量入口
