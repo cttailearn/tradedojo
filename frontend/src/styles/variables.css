@@ -123,7 +123,8 @@
 
 /* ============================================================
  * 暗色模式 (2026-07-31 P2-1) - 通过 html.dark 切换
- * Element Plus 自动跟随 (配置见 main.js)
+ * Element Plus 自动跟随 (dark/css-vars.css)
+ * 2026-08-04: 重构为深金融风(近黑蓝底 + 高对比数据)
  * ============================================================ */
 html.dark {
   --color-primary:        #60a5fa;
@@ -145,30 +146,31 @@ html.dark {
   --color-down:    #34d399;
   --color-down-bg: #0a2920;
 
-  --bg-page:    #0f172a;
-  --bg-card:    #1e293b;
-  --bg-sidebar: #1e293b;
-  --bg-header:  #1e293b;
-  --bg-hover:   #334155;
+  /* 深金融风背景层级: 页面底近黑蓝, 卡片逐层提亮 */
+  --bg-page:    #070b14;
+  --bg-card:    #0d1524;
+  --bg-sidebar: #0a1120;
+  --bg-header:  #0a1120;
+  --bg-hover:   #16233b;
   --bg-active:  #1e3a8a;
-  --bg-muted:   #0f172a;
+  --bg-muted:   #111c30;
 
-  --text-primary:    #f1f5f9;
-  --text-regular:    #cbd5e1;
+  --text-primary:    #f8fafc;
+  --text-regular:    #dbe2ee;
   --text-secondary:  #94a3b8;
-  --text-placeholder:#64748b;
-  --text-disabled:   #475569;
-  --text-inverse:    #0f172a;
+  --text-placeholder:#5b6b84;
+  --text-disabled:   #3d4c66;
+  --text-inverse:    #070b14;
 
-  --border-color:       #334155;
-  --border-color-light: #1e293b;
-  --border-color-dark:  #475569;
+  --border-color:       #1e2b45;
+  --border-color-light: #16233b;
+  --border-color-dark:  #2b3c5e;
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
-  --shadow-xl: 0 12px 36px rgba(0, 0, 0, 0.6);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-xl: 0 12px 36px rgba(0, 0, 0, 0.65);
 }
 
 /* 暗色模式微调: 强制关键元素 */
@@ -179,3 +181,8 @@ html.dark .el-table th.el-table__cell { background: var(--bg-muted) !important; 
 html.dark .el-table tr { background: var(--bg-card) !important; color: var(--text-primary); }
 html.dark .el-input__wrapper { background: var(--bg-card); }
 html.dark .el-button { border-color: var(--border-color); }
+html.dark .el-dialog, html.dark .el-drawer, html.dark .el-card { background: var(--bg-card); }
+html.dark .el-popper.is-light, html.dark .el-popper.is-light .el-popper__arrow::before {
+  background: var(--bg-card);
+  border-color: var(--border-color);
+}

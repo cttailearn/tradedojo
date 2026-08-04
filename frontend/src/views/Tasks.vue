@@ -339,9 +339,9 @@ onUnmounted(stopPolling)
   font-size: 13px;
   line-height: 1.6;
   padding: 8px 12px;
-  background: #fff;
+  background: var(--bg-card);
   border-radius: 4px;
-  border: 1px dashed #dcdfe6;
+  border: 1px dashed var(--border-color-dark);
 }
 .task-card-foot {
   display: flex;

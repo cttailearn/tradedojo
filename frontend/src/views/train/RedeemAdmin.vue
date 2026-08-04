@@ -190,14 +190,14 @@ onMounted(() => {
   margin-bottom: 12px;
 }
 .head-row .page-title { margin: 0; }
-.page-card { background: #fff; padding: 18px 22px; border-radius: 6px;
+.page-card { background: var(--bg-card); padding: 18px 22px; border-radius: 6px;
              box-shadow: 0 1px 4px rgba(0,0,0,.06); }
 .page-card h3 { margin-top: 0; }
-.codes { background: #fafbfc; padding: 12px; border-radius: 4px;
+.codes { background: var(--bg-muted); padding: 12px; border-radius: 4px;
          font-family: Consolas, monospace; max-height: 200px; overflow: auto; margin-bottom: 8px;
-         border: 1px solid #ebeef5; }
+         border: 1px solid var(--border-color); }
 .code-row { display: flex; justify-content: space-between; align-items: center;
-            padding: 4px 0; border-bottom: 1px dashed #e6ebf2; }
+            padding: 4px 0; border-bottom: 1px dashed var(--border-color); }
 .code-row:last-child { border-bottom: none; }
 .code { font-size: 13px; color: #1f3b66; font-weight: bold; }
 .muted { color: #c0c4cc; }

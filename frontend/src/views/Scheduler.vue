@@ -683,9 +683,9 @@ onUnmounted(() => {
 .task-progress-card {
   margin-top: 16px;
   padding: 18px 20px;
-  border: 1px solid #e4e7ed;
+  border: 1px solid var(--border-color);
   border-radius: 8px;
-  background: #fff;
+  background: var(--bg-card);
 }
 
 .task-progress-title {
@@ -734,7 +734,7 @@ onUnmounted(() => {
   overflow: auto;
   white-space: pre-wrap;
   color: #c45656;
-  background: #fff;
+  background: var(--bg-card);
   border-radius: 4px;
   font-family: Consolas, monospace;
   font-size: 12px;

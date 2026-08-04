@@ -613,7 +613,7 @@ watch(activeTab, (v) => {
 }
 .head-row .page-title { margin: 0; }
 .filter-row { display: flex; align-items: center; }
-.page-card { background: #fff; padding: 16px; border-radius: 6px;
+.page-card { background: var(--bg-card); padding: 16px; border-radius: 6px;
              box-shadow: 0 1px 4px rgba(0,0,0,.06); }
 .muted { color: #909399; }
 .muted.small { font-size: 12px; }

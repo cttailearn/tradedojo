@@ -6,6 +6,8 @@ import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import 'element-plus/dist/index.css'
+// 2026-08-04: EP 官方暗色变量(html.dark 选择器),必须在项目样式前引入
+import 'element-plus/theme-chalk/dark/css-vars.css'
 
 import App from './App.vue'
 import router from './router'

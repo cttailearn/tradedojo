@@ -211,13 +211,13 @@ onMounted(load)
 .hero-shortcuts {
   margin-top: 16px;
   padding: 12px 16px;
-  background: #f0f5ff;
+  background: var(--bg-active);
   border-radius: 6px;
   display: flex; align-items: center; gap: 12px;
   flex-wrap: wrap;
 }
-.hero-shortcuts .hint { color: #909399; font-size: 13px; }
-.hero-shortcuts strong { color: #303133; }
+.hero-shortcuts .hint { color: var(--text-placeholder); font-size: 13px; }
+.hero-shortcuts strong { color: var(--text-primary); }
 .hero-shortcuts .green { color: #67c23a; font-weight: 600; }
 .hero-shortcuts .red { color: #f56c6c; font-weight: 600; }
 .page-card {

@@ -263,7 +263,8 @@ async function exportPNG() {
     const target = document.querySelector('.report')
     if (!target) { ElMessage.error('找不到报告内容'); return }
     const canvas = await html2canvas(target, {
-      backgroundColor: '#fff',
+      // 跟随当前主题背景(浅色白底 / 暗色深蓝),避免导出的 PNG 与界面风格冲突
+      backgroundColor: document.documentElement.classList.contains('dark') ? '#070b14' : '#fff',
       scale: 2,
       logging: false,
       useCORS: true,

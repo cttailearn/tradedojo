@@ -138,3 +138,57 @@
   /* Slider */
   --el-slider-main-bg-color:       var(--color-primary);
 }
+
+/* ============================================================
+ * 暗色模式 EP 变量覆盖 (2026-08-04)
+ * EP dark/css-vars.css 已处理大部分 --el-* 变量,
+ * 此处修正 :root 中硬编码的浅色 light-N 家族, 防止暗色下发白
+ * ============================================================ */
+html.dark {
+  /* Primary light-N: 深蓝渐变族 */
+  --el-color-primary-light-3:      #3b82f6;
+  --el-color-primary-light-5:      #2563eb;
+  --el-color-primary-light-7:      #1e3a8a;
+  --el-color-primary-light-8:      #172554;
+  --el-color-primary-light-9:      #0f1e3d;
+  --el-color-primary-dark-2:       #93c5fd;
+
+  /* Success */
+  --el-color-success-light-3:      #10b981;
+  --el-color-success-light-5:      #059669;
+  --el-color-success-light-7:      #065f46;
+  --el-color-success-light-8:      #064e3b;
+  --el-color-success-light-9:      #04302c;
+
+  /* Warning */
+  --el-color-warning-light-3:      #f59e0b;
+  --el-color-warning-light-5:      #d97706;
+  --el-color-warning-light-7:      #92400e;
+  --el-color-warning-light-8:      #78350f;
+  --el-color-warning-light-9:      #451a03;
+
+  /* Danger */
+  --el-color-danger-light-3:       #ef4444;
+  --el-color-danger-light-5:       #dc2626;
+  --el-color-danger-light-7:       #991b1b;
+  --el-color-danger-light-8:       #7f1d1d;
+  --el-color-danger-light-9:       #450a0a;
+
+  /* Info */
+  --el-color-info-light-3:         #6366f1;
+  --el-color-info-light-5:         #4f46e5;
+  --el-color-info-light-7:         #3730a3;
+  --el-color-info-light-8:         #312e81;
+  --el-color-info-light-9:         #1e1b4b;
+
+  /* 暗色下输入框/悬停填充对齐深蓝调 */
+  --el-fill-color:                 #16233b;
+  --el-fill-color-light:           #131f35;
+  --el-fill-color-lighter:         #111c30;
+  --el-fill-color-extra-light:     #0d1524;
+  --el-fill-color-dark:            #1e2b45;
+  --el-fill-color-darker:          #24334f;
+
+  /* 弹层/覆盖层背景 */
+  --el-bg-color-overlay:           #0d1524;
+}

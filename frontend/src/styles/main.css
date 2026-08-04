@@ -387,6 +387,39 @@ body {
   flex-wrap: wrap; margin-bottom: var(--space-lg);
 }
 
+/* ═══════ 暗色模式细节微调 (2026-08-04) ═══════ */
+/* 暗色下骨架屏分层灰度: 三个渐变段用不同暗色, 使 shimmer 可见 */
+html.dark .skeleton {
+  background: linear-gradient(90deg,
+    #16233b 25%,
+    #20304d 50%,
+    #16233b 75%);
+  background-size: 200% 100%;
+}
+/* 暗色下统计卡 hover 边框用暗色系蓝调, 避免发白 */
+html.dark .stat-card:hover {
+  border-color: var(--color-primary-dark);
+}
+/* 暗色下任务日志背景与页面融为一体(维持金融终端感) */
+html.dark .task-log {
+  background: #0a1120;
+  border: 1px solid var(--border-color);
+}
+/* 暗色下 metric-item 左条与 hover 层次 */
+html.dark .metric-item {
+  background: var(--bg-muted);
+}
+html.dark .metric-item:hover {
+  background: var(--bg-hover);
+}
+/* 暗色下表格表头文字用次强调色, 略低于正文避免刺眼 */
+html.dark .el-table th.el-table__cell .cell {
+  color: var(--text-secondary);
+}
+html.dark .el-table .cell {
+  color: var(--text-regular);
+}
+
 /* ───── 响应式 ───── */
 @media (max-width: 768px) {
   .main-content { padding: var(--space-lg); }

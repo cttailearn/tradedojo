@@ -282,6 +282,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import { stocksApi, tasksApi, klineApi } from '@/api/modules'
+import { chartThemeColors } from '@/utils/chartTheme'
 
 const router = useRouter()
 const loading = ref(false)
@@ -536,21 +537,25 @@ function renderKlineChart() {
       return +(s / n).toFixed(2)
     })
   const ma5 = calcMA(5), ma10 = calcMA(10), ma20 = calcMA(20)
+  const T = chartThemeColors()
   klineChart.setOption({
-    title: { text: `${klineForm.code} ${klinePeriodLabel()}`, left: 'center' },
-    legend: { data: ['K线', 'MA5', 'MA10', 'MA20', '成交量'], top: 30 },
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross', link: [{ xAxisIndex: 'all' }] } },
+    textStyle: { color: T.text },
+    title: { text: `${klineForm.code} ${klinePeriodLabel()}`, left: 'center', textStyle: { color: T.text } },
+    legend: { data: ['K线', 'MA5', 'MA10', 'MA20', '成交量'], top: 30, textStyle: { color: T.subText } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross', link: [{ xAxisIndex: 'all' }] },
+      backgroundColor: T.tooltipBg, borderColor: T.tooltipBorder,
+      textStyle: { color: T.text } },
     grid: [
       { left: 60, right: 30, top: 70, height: '60%' },
       { left: 60, right: 30, top: '78%', height: '16%' },
     ],
     xAxis: [
       { type: 'category', data: dates, scale: true, boundaryGap: false,
-        axisLine: { onZero: false }, splitLine: { show: false }, axisLabel: { show: false } },
+        axisLine: { onZero: false, lineStyle: { color: T.axisLine } }, splitLine: { show: false }, axisLabel: { show: false } },
       { type: 'category', data: dates, gridIndex: 1, axisLabel: { show: false } },
     ],
     yAxis: [
-      { scale: true, splitArea: { show: true } },
+      { scale: true, splitArea: { show: true }, axisLabel: { color: T.subText }, axisLine: { lineStyle: { color: T.axisLine } }, splitLine: { lineStyle: { color: T.splitLine } } },
       { scale: true, gridIndex: 1, splitNumber: 2,
         axisLabel: { show: false }, axisLine: { show: false }, splitLine: { show: false } },
     ],

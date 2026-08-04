@@ -387,6 +387,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import { trainApi } from '@/api/modules'
+import { chartThemeColors } from '@/utils/chartTheme'
 
 const loading = ref(false)
 const loaded = ref(false)
@@ -442,15 +443,17 @@ async function load() {
 }
 
 function renderCharts() {
+  const T = chartThemeColors()
   if (data.value && holdingChartEl.value) {
     holdingChart = echarts.init(holdingChartEl.value)
     holdingChart.setOption({
-      tooltip: { trigger: 'axis' },
+      textStyle: { color: T.text },
+      tooltip: { trigger: 'axis', backgroundColor: T.tooltipBg, borderColor: T.tooltipBorder, textStyle: { color: T.text } },
       grid: { left: 60, right: 20, top: 20, bottom: 30 },
-      xAxis: { type: 'category', data: data.value.holding_distribution.map(d => d.bucket) },
+      xAxis: { type: 'category', data: data.value.holding_distribution.map(d => d.bucket), axisLine: { lineStyle: { color: T.axisLine } }, axisLabel: { color: T.subText } },
       yAxis: [
-        { type: 'value', name: '回合数', position: 'left', axisLabel: { color: '#909399' } },
-        { type: 'value', name: '胜率%', position: 'right', max: 100, axisLabel: { color: '#909399' } },
+        { type: 'value', name: '回合数', position: 'left', axisLabel: { color: T.subText }, splitLine: { lineStyle: { color: T.splitLine } } },
+        { type: 'value', name: '胜率%', position: 'right', max: 100, axisLabel: { color: T.subText }, splitLine: { show: false } },
       ],
       series: [
         { name: '回合数', type: 'bar', data: data.value.holding_distribution.map(d => d.count), itemStyle: { color: '#409eff' } },
@@ -461,12 +464,13 @@ function renderCharts() {
   if (data.value && positionChartEl.value) {
     positionChart = echarts.init(positionChartEl.value)
     positionChart.setOption({
-      tooltip: { trigger: 'axis' },
+      textStyle: { color: T.text },
+      tooltip: { trigger: 'axis', backgroundColor: T.tooltipBg, borderColor: T.tooltipBorder, textStyle: { color: T.text } },
       grid: { left: 60, right: 20, top: 20, bottom: 30 },
-      xAxis: { type: 'category', data: data.value.position_distribution.map(d => d.bucket), axisLabel: { interval: 0, rotate: 0, fontSize: 10 } },
+      xAxis: { type: 'category', data: data.value.position_distribution.map(d => d.bucket), axisLabel: { interval: 0, rotate: 0, fontSize: 10, color: T.subText }, axisLine: { lineStyle: { color: T.axisLine } } },
       yAxis: [
-        { type: 'value', name: '笔数', axisLabel: { color: '#909399' } },
-        { type: 'value', name: '胜率%', position: 'right', max: 100, axisLabel: { color: '#909399' } },
+        { type: 'value', name: '笔数', axisLabel: { color: T.subText }, splitLine: { lineStyle: { color: T.splitLine } } },
+        { type: 'value', name: '胜率%', position: 'right', max: 100, axisLabel: { color: T.subText }, splitLine: { show: false } },
       ],
       series: [
         { name: '笔数', type: 'bar', data: data.value.position_distribution.map(d => d.count), itemStyle: { color: '#e6a23c' } },
@@ -477,12 +481,13 @@ function renderCharts() {
   if (data.value && pricePosChartEl.value) {
     pricePosChart = echarts.init(pricePosChartEl.value)
     pricePosChart.setOption({
-      tooltip: { trigger: 'axis' },
+      textStyle: { color: T.text },
+      tooltip: { trigger: 'axis', backgroundColor: T.tooltipBg, borderColor: T.tooltipBorder, textStyle: { color: T.text } },
       grid: { left: 60, right: 20, top: 20, bottom: 30 },
-      xAxis: { type: 'category', data: data.value.price_position_distribution.map(d => d.bucket) },
+      xAxis: { type: 'category', data: data.value.price_position_distribution.map(d => d.bucket), axisLine: { lineStyle: { color: T.axisLine } }, axisLabel: { color: T.subText } },
       yAxis: [
-        { type: 'value', name: '笔数', axisLabel: { color: '#909399' } },
-        { type: 'value', name: '胜率%', position: 'right', max: 100, axisLabel: { color: '#909399' } },
+        { type: 'value', name: '笔数', axisLabel: { color: T.subText }, splitLine: { lineStyle: { color: T.splitLine } } },
+        { type: 'value', name: '胜率%', position: 'right', max: 100, axisLabel: { color: T.subText }, splitLine: { show: false } },
       ],
       series: [
         { name: '笔数', type: 'bar', data: data.value.price_position_distribution.map(d => d.count), itemStyle: { color: '#909399' } },
@@ -493,21 +498,22 @@ function renderCharts() {
   if (data.value && monthlyChartEl.value && data.value.monthly_pnl.length) {
     monthlyChart = echarts.init(monthlyChartEl.value)
     monthlyChart.setOption({
-      tooltip: { trigger: 'axis',
+      textStyle: { color: T.text },
+      tooltip: { trigger: 'axis', backgroundColor: T.tooltipBg, borderColor: T.tooltipBorder, textStyle: { color: T.text },
         formatter: (params) => {
           const p = params[0]
           return `${p.axisValue}<br/>盈亏 <b style="color:${p.value >= 0 ? '#67c23a' : '#f56c6c'}">${p.value >= 0 ? '+' : ''}${money(p.value)}</b>`
         }
       },
       grid: { left: 60, right: 30, top: 30, bottom: 30 },
-      xAxis: { type: 'category', data: data.value.monthly_pnl.map(d => d.month) },
-      yAxis: { type: 'value', axisLabel: { color: '#909399', formatter: v => v.toLocaleString() } },
+      xAxis: { type: 'category', data: data.value.monthly_pnl.map(d => d.month), axisLine: { lineStyle: { color: T.axisLine } }, axisLabel: { color: T.subText } },
+      yAxis: { type: 'value', axisLabel: { color: T.subText, formatter: v => v.toLocaleString() }, splitLine: { lineStyle: { color: T.splitLine } } },
       series: [{
         type: 'bar', data: data.value.monthly_pnl.map(d => ({
           value: d.pnl,
           itemStyle: { color: d.pnl >= 0 ? '#ef232a' : '#14b066' },
         })),
-        label: { show: true, position: 'top', formatter: (p) => p.value >= 0 ? '+' + money(p.value) : money(p.value), fontSize: 10 },
+        label: { show: true, position: 'top', formatter: (p) => p.value >= 0 ? '+' + money(p.value) : money(p.value), fontSize: 10, color: T.text },
       }],
     })
   }
@@ -574,14 +580,14 @@ onUnmounted(() => {
 .tag-descs li::marker { color: #c0c4cc; }
 
 .kpi-row { margin-bottom: 12px; }
-.kpi-card { background: #fff; border-radius: 6px; padding: 16px 18px; box-shadow: var(--shadow-xs); }
+.kpi-card { background: var(--bg-card); border-radius: 6px; padding: 16px 18px; box-shadow: var(--shadow-xs); }
 .kpi-lbl { font-size: 12px; color: #909399; }
-.kpi-val { font-size: 28px; font-weight: bold; margin: 4px 0; line-height: 1.1; color: #303133; }
+.kpi-val { font-size: 28px; font-weight: bold; margin: 4px 0; line-height: 1.1; color: var(--text-primary); }
 .kpi-val small { font-size: 14px; font-weight: normal; color: #909399; margin-left: 4px; }
 .kpi-sub { font-size: 12px; color: #909399; }
-.kpi-sub b { color: #303133; }
+.kpi-sub b { color: var(--text-primary); }
 
-.metric-block { background: #fff; border-radius: 6px; padding: 14px 16px; box-shadow: var(--shadow-xs); }
+.metric-block { background: var(--bg-card); border-radius: 6px; padding: 14px 16px; box-shadow: var(--shadow-xs); }
 .metric-block .lbl { font-size: 12px; color: #909399; margin-bottom: 4px; }
 .metric-block .vals { font-size: 18px; font-weight: bold; }
 .metric-block .vals small { font-size: 12px; font-weight: normal; color: #909399; }

@@ -306,7 +306,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
   flex: 1;
   text-align: center;
   padding: 6px 4px;
-  background: #fff;
+  background: var(--bg-card);
   border-radius: 4px;
 }
 .coverage-stat .num {

@@ -523,6 +523,7 @@ import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import { backtestApi, kronosApi } from '@/api/modules'
 import { BUILTIN_STRATEGIES, loadStrategies, strategyToBacktestParams } from '@/utils/strategy'
+import { chartThemeColors } from '@/utils/chartTheme'
 
 const route = useRoute()
 
@@ -961,16 +962,21 @@ function renderAiChart() {
     showSymbol: true, symbolSize: 6, itemStyle: { color: '#E6A23C' },
   })
 
+  const T = chartThemeColors()
   c.setOption({
+    textStyle: { color: T.text },
     title: {
       text: isBacktest ? `${aiResult.value.code} AI 回测对比` : `${aiResult.value.code} K线预测`,
       left: 'center',
+      textStyle: { color: T.text },
     },
-    legend: { data: ['历史K线', '实际K线', '预测K线', '预测收盘'], top: 30 },
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    legend: { data: ['历史K线', '实际K线', '预测K线', '预测收盘'], top: 30, textStyle: { color: T.subText } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' },
+      backgroundColor: T.tooltipBg, borderColor: T.tooltipBorder, textStyle: { color: T.text } },
     grid: [{ left: 60, right: 30, top: 80, height: '65%' }],
-    xAxis: { type: 'category', data: allDates, scale: true, boundaryGap: false },
-    yAxis: { scale: true, splitArea: { show: true } },
+    xAxis: { type: 'category', data: allDates, scale: true, boundaryGap: false,
+      axisLine: { lineStyle: { color: T.axisLine } }, axisLabel: { color: T.subText } },
+    yAxis: { scale: true, splitArea: { show: true }, axisLabel: { color: T.subText }, axisLine: { lineStyle: { color: T.axisLine } }, splitLine: { lineStyle: { color: T.splitLine } } },
     dataZoom: [
       { type: 'inside', start: 60, end: 100 },
       { show: true, type: 'slider', bottom: 10, start: 60, end: 100 },

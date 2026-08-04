@@ -501,6 +501,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import { trainApi, tasksApi } from '@/api/modules'
 import { useTrainAuthStore } from '@/stores/trainAuth'
+import { chartThemeColors } from '@/utils/chartTheme'
 
 const route = useRoute()
 const router = useRouter()
@@ -1281,12 +1282,14 @@ function renderEquity() {
   }
   const hs300 = alignBench(benchHs300.value)
   const buyHold = alignBench(benchBuyHold.value)
+  const T = chartThemeColors()
   equityChart.setOption({
-    tooltip: { trigger: 'axis' },
-    legend: { data: ['总权益', '可用资金', '沪深 300', '买入持有'], top: 0 },
+    textStyle: { color: T.text },
+    tooltip: { trigger: 'axis', backgroundColor: T.tooltipBg, borderColor: T.tooltipBorder, textStyle: { color: T.text } },
+    legend: { data: ['总权益', '可用资金', '沪深 300', '买入持有'], top: 0, textStyle: { color: T.subText } },
     grid: { left: 50, right: 20, top: 30, bottom: 30 },
-    xAxis: { type: 'category', data: dates },
-    yAxis: { type: 'value', scale: true },
+    xAxis: { type: 'category', data: dates, axisLine: { lineStyle: { color: T.axisLine } }, axisLabel: { color: T.subText } },
+    yAxis: { type: 'value', scale: true, axisLine: { lineStyle: { color: T.axisLine } }, axisLabel: { color: T.subText }, splitLine: { lineStyle: { color: T.splitLine } } },
     series: [
       {
         name: '总权益', type: 'line', data: equityArr, smooth: true,
@@ -1503,7 +1506,7 @@ watch(() => session.value?.current_date, async () => {
 .actions-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .actions-row :deep(.el-button) { padding: 5px 10px; }
 .metric-bar {
-  background: #fff; padding: 14px 18px;
+  background: var(--bg-card); padding: 14px 18px;
   border-radius: 6px;
   box-shadow: 0 1px 4px rgba(0,0,0,.06);
 }
@@ -1515,7 +1518,7 @@ watch(() => session.value?.current_date, async () => {
   gap: 12px; flex-wrap: wrap;
 }
 .signal-bar {
-  background: #fff;
+  background: var(--bg-card);
   padding: 10px 16px;
   border-radius: 6px;
   box-shadow: 0 1px 4px rgba(0,0,0,.06);
@@ -1523,18 +1526,18 @@ watch(() => session.value?.current_date, async () => {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
 }
 .signal-label {
-  font-weight: 600; color: #303133; font-size: 14px;
+  font-weight: 600; color: var(--text-primary); font-size: 14px;
   margin-right: 6px;
 }
 .signal-chip {
   display: inline-block;
   padding: 4px 10px; border-radius: 12px;
   font-size: 12px; line-height: 1.4;
-  background: #f4f4f5; color: #606266;
+  background: var(--bg-muted); color: var(--text-secondary);
 }
 .signal-chip b { margin-right: 4px; }
-.signal-bullish { background: #f0f9eb; color: #67c23a; border: 1px solid #e1f3d8; }
-.signal-bearish { background: #fef0f0; color: #f56c6c; border: 1px solid #fde2e2; }
+.signal-bullish { background: rgba(16,185,129,.14); color: #34d399; border: 1px solid rgba(16,185,129,.3); }
+.signal-bearish { background: rgba(239,68,68,.14); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
 .signal-warn { background: #fdf6ec; color: #e6a23c; border: 1px solid #faecd8; }
 .signal-info { background: #ecf5ff; color: #909399; border: 1px solid #d9ecff; }
 .fade-enter-active, .fade-leave-active { transition: opacity .25s; }
@@ -1553,11 +1556,11 @@ watch(() => session.value?.current_date, async () => {
 .info-row {
   display: flex; justify-content: space-between;
   font-size: 12px; line-height: 1.7;
-  color: #606266;
+  color: var(--text-secondary);
 }
-.info-label { color: #909399; }
-.info-val { color: #303133; font-weight: 500; }
-.info-row.highlight { border-top: 1px dashed #dcdfe6; margin-top: 4px; padding-top: 4px; }
+.info-label { color: var(--text-placeholder); }
+.info-val { color: var(--text-primary); font-weight: 500; }
+.info-row.highlight { border-top: 1px dashed var(--border-color-dark); margin-top: 4px; padding-top: 4px; }
 .info-row.highlight .info-val { color: #409eff; font-weight: 600; }
 
 /* 2026-07-31 P1-2: 新手引导 */
@@ -1568,12 +1571,12 @@ watch(() => session.value?.current_date, async () => {
   z-index: 9999;
 }
 .onboarding-card {
-  background: #fff; border-radius: 12px;
+  background: var(--bg-card); border-radius: 12px;
   width: 720px; max-width: 92vw; max-height: 90vh; overflow: auto;
   padding: 28px 32px;
   box-shadow: 0 20px 60px rgba(0,0,0,.25);
 }
-.onboarding-card h2 { margin: 0 0 24px 0; color: #303133; font-size: 22px; }
+.onboarding-card h2 { margin: 0 0 24px 0; color: var(--text-primary); font-size: 22px; }
 .ob-steps { display: flex; flex-direction: column; gap: 18px; margin-bottom: 24px; }
 .ob-step { display: flex; gap: 14px; }
 .ob-num {
@@ -1582,30 +1585,30 @@ watch(() => session.value?.current_date, async () => {
   display: flex; align-items: center; justify-content: center;
   font-weight: 600; flex-shrink: 0;
 }
-.ob-step h3 { margin: 0 0 4px 0; color: #303133; font-size: 15px; }
-.ob-step p { margin: 0; color: #606266; font-size: 13px; line-height: 1.7; }
+.ob-step h3 { margin: 0 0 4px 0; color: var(--text-primary); font-size: 15px; }
+.ob-step p { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.7; }
 .ob-step kbd {
-  background: #f4f4f5; border: 1px solid #dcdfe6; border-radius: 3px;
+  background: var(--bg-muted); border: 1px solid var(--border-color-dark); border-radius: 3px;
   padding: 1px 6px; font-size: 11px; font-family: monospace;
-  color: #303133;
+  color: var(--text-regular);
 }
 .ob-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 12px; border-top: 1px solid #ebeef5; }
 .metric-row { display: flex; gap: 12px; align-items: stretch; flex-wrap: wrap; }
 .metric-row-1 { padding-bottom: 12px; border-bottom: 1px dashed #ebeef5; margin-bottom: 12px; }
 .metric-row-2 { align-items: center; }
-.m-block { padding: 0 12px; min-width: 130px; border-right: 1px dashed #ebeef5;
+.m-block { padding: 0 12px; min-width: 130px; border-right: 1px dashed var(--border-color);
           display: flex; flex-direction: column; justify-content: center; }
 .m-block:last-child { border-right: none; }
-.m-block.highlight { background: #f0f9eb; border-radius: 4px; }
-.m-block .lbl { font-size: 12px; color: #909399; }
+.m-block.highlight { background: var(--bg-active); border-radius: 4px; }
+.m-block .lbl { font-size: 12px; color: var(--text-placeholder); }
 .m-block .val { font-size: 18px; font-weight: bold; margin-top: 2px;
-                line-height: 1.2; color: #303133; }
+                line-height: 1.2; color: var(--text-primary); }
 .m-block .val.val-sm { font-size: 15px; }
-.m-block .val .code { font-size: 12px; color: #909399; font-weight: normal; margin-left: 4px; }
+.m-block .val .code { font-size: 12px; color: var(--text-placeholder); font-weight: normal; margin-left: 4px; }
 /* 中国市场习惯:涨红跌绿 */
 .m-block .val.green { color: #ef232a; }   /* 浮盈/总盈=红 */
 .m-block .val.red { color: #14b066; }     /* 浮亏/总亏=绿 */
-.m-block .meta { font-size: 12px; color: #909399; }
+.m-block .meta { font-size: 12px; color: var(--text-placeholder); }
 .m-block .meta .green { color: #ef232a; }
 .m-block .meta .red { color: #14b066; }
 .m-block.profit { min-width: 180px; }
@@ -1616,23 +1619,23 @@ watch(() => session.value?.current_date, async () => {
 /* 进度条行 */
 .progress-block { flex: 1; min-width: 320px; padding: 0 12px; }
 .progress-text { display: flex; justify-content: space-between;
-                 font-size: 12px; color: #909399; margin-bottom: 4px; }
-.progress-text b { color: #303133; }
-.progress-current.highlight { background: #ecf5ff; color: #409eff;
+                 font-size: 12px; color: var(--text-placeholder); margin-bottom: 4px; }
+.progress-text b { color: var(--text-primary); }
+.progress-current.highlight { background: var(--bg-active); color: #409eff;
                                padding: 2px 8px; border-radius: 10px; }
-.progress-hint { font-size: 12px; color: #909399; margin-top: 4px; }
-.progress-hint b { color: #303133; }
+.progress-hint { font-size: 12px; color: var(--text-placeholder); margin-top: 4px; }
+.progress-hint b { color: var(--text-primary); }
 
 /* 操作行 */
 .action-block { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-.page-card { background: #fff; padding: 12px 16px; border-radius: 6px;
+.page-card { background: var(--bg-card); padding: 12px 16px; border-radius: 6px;
              box-shadow: 0 1px 4px rgba(0,0,0,.06); }
 .page-card h3 { margin: 0 0 8px; }
 .chart-head { display: flex; align-items: center; justify-content: space-between;
               margin-bottom: 8px; flex-wrap: wrap; gap: 8px; }
-.chart-head .t { font-size: 14px; color: #303133; font-weight: bold; }
-.chart-head .hint { font-size: 12px; color: #909399; }
+.chart-head .t { font-size: 14px; color: var(--text-primary); font-weight: bold; }
+.chart-head .hint { font-size: 12px; color: var(--text-placeholder); }
 .bench-pick { display: flex; align-items: center; gap: 6px; }
 .kline-chart {
   width: 100%;
@@ -1681,18 +1684,18 @@ watch(() => session.value?.current_date, async () => {
   .trade-pane { grid-template-columns: 1fr; }
 }
 .trade-pane-col {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 12px 14px;
-  background: #fafbfc;
+  background: var(--bg-card);
 }
-.trade-pane-buy { border-color: rgba(239,35,42,.25); background: linear-gradient(180deg, #fff5f5 0%, #fafbfc 50%); }
-.trade-pane-sell { border-color: rgba(20,176,102,.25); background: linear-gradient(180deg, #f0fbf5 0%, #fafbfc 50%); }
+.trade-pane-buy { border-color: rgba(239,35,42,.25); background: linear-gradient(180deg, rgba(239,35,42,.10) 0%, var(--bg-card) 50%); }
+.trade-pane-sell { border-color: rgba(20,176,102,.25); background: linear-gradient(180deg, rgba(20,176,102,.10) 0%, var(--bg-card) 50%); }
 .trade-pane-header {
   display: flex; align-items: center; gap: 6px;
   font-weight: 600; font-size: 15px;
   margin-bottom: 10px; padding-bottom: 8px;
-  border-bottom: 1px dashed #e4e7ed;
+  border-bottom: 1px dashed var(--border-color);
 }
 .trade-form :deep(.el-form-item) { margin-bottom: 12px; }
 .trade-form :deep(.el-form-item__label) { font-size: 12px; color: #606266; }
