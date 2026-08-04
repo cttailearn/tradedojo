@@ -31,6 +31,9 @@ DEV_ADMIN_PASSWORD*
 .env.*
 !.env.example
 secrets.*
+# curl / requests 调试用的 cookie jar(2026-08-04 加,防 Bearer 误入库)
+cookies.txt
+*.cookies
 
 # ===== Frontend 构建产物 =====
 node_modules/
