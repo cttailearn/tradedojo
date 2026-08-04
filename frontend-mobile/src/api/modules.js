@@ -22,7 +22,7 @@ export const trainApi = {
     api.get(`/train/sessions/${id}/kline`, { params: { period } }),
   equity: (id) => api.get(`/train/sessions/${id}/equity`),
   trade: (id, payload) => api.post(`/train/sessions/${id}/trade`, payload),
-  advance: (id, days = 1) => api.post(`/train/sessions/${id}/advance`, { days }),
+  advance: (id, payload = { days: 1 }) => api.post(`/train/sessions/${id}/advance`, payload),
   finish: (id) => api.post(`/train/sessions/${id}/finish`),
 
   statsOverview: () => api.get('/train/stats/overview'),

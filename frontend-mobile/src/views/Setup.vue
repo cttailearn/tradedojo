@@ -14,6 +14,18 @@
         <van-tab title="5 年内" name="5y" />
       </van-tabs>
 
+      <label class="field" style="margin-top: var(--sp-3xl);">
+        <span class="field__label">K 线周期</span>
+        <van-radio-group v-model="form.bar_period" direction="horizontal">
+          <van-radio :name="240">日线</van-radio>
+          <van-radio :name="30">30 分钟</van-radio>
+          <van-radio :name="60">60 分钟</van-radio>
+        </van-radio-group>
+      </label>
+      <p v-if="form.bar_period !== 240" class="setup__tip">
+        分钟K线数据仅覆盖近期约30个交易日(本地约1个月),训练日期需在数据范围内。
+      </p>
+
       <label class="field field--inline" style="margin-top: var(--sp-3xl);">
         <span class="field__label">训练开始日</span>
         <input
@@ -215,6 +227,7 @@ oneYearAgo.setFullYear(today.getFullYear() - 1)
 const form = reactive({
   start_date: fmtLocal(oneYearAgo),
   end_date: fmtLocal(today),
+  bar_period: 240,
   lookback_months: 6,
   initial_cash: 1_000_000,
   per_trade_amount: 100_000,
@@ -259,6 +272,7 @@ function reset() {
   Object.assign(form, {
     start_date: fmtLocal(oneYearAgo),
     end_date: fmtLocal(today),
+    bar_period: 240,
     lookback_months: 6,
     initial_cash: 1_000_000,
     per_trade_amount: 100_000,
@@ -319,6 +333,15 @@ onMounted(loadOptions)
   margin: 0;
   color: var(--text-secondary);
   font-size: 0.26rem;
+  line-height: 1.5;
+}
+.setup__tip {
+  margin: var(--sp-2xl) 0 0;
+  padding: var(--sp-2xl) var(--sp-3xl);
+  background: #fff7e6;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.22rem;
   line-height: 1.5;
 }
 

@@ -172,6 +172,15 @@ class TrainingSetupRequest(BaseModel):
     """发起训练会话:参数 + 自选时间窗,后端随机选股"""
     start_date: str = Field(..., description="用户选定的训练开始日(只是历史快照日,真实时间已隐藏)")
     end_date: str = Field(..., description="数据范围结束日(快照日)")
+    # 2026-08-04 分钟级训练引擎: K线周期 (240=日线 / 30 / 60 分钟)
+    bar_period: int = Field(240, description="K线周期: 240=日线, 30/60=分钟K线")
+
+    @field_validator("bar_period")
+    @classmethod
+    def _bar_period_valid(cls, v):
+        if v not in (30, 60, 240):
+            raise ValueError("bar_period 仅支持 30/60/240")
+        return v
     lookback_months: int = Field(6, ge=1, le=36)
 
     @field_validator("end_date")
@@ -237,7 +246,8 @@ class TradeOrderRequest(BaseModel):
 
 
 class AdvanceRequest(BaseModel):
-    days: int = Field(1, ge=1, le=250, description="推进多少个交易日")
+    days: int = Field(1, ge=1, le=250, description="推进多少个交易日(日线模式)")
+    bars: Optional[int] = Field(None, ge=1, le=250, description="推进多少根K线(分钟模式, 优先于 days)")
 
 
 class RedeemCodeCreateRequest(BaseModel):

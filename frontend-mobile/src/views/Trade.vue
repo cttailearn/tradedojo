@@ -51,11 +51,11 @@
         <div class="advance__text">
           <div>
             <span class="advance__lbl">已揭示</span>
-            <strong class="highlight">{{ session?.current_date?.slice(0,10) }}</strong>
+            <strong class="highlight">{{ revealText }}</strong>
           </div>
           <div>
             <span class="advance__lbl">起点</span>
-            <span>{{ session?.start_date?.slice(0,10) }}</span>
+            <span>{{ isMinute ? (session?.reveal_time?.slice(0,10) || session?.start_date?.slice(0,10)) : session?.start_date?.slice(0,10) }}</span>
           </div>
           <div>
             <span class="advance__lbl">终点</span>
@@ -71,20 +71,12 @@
         />
         <div class="advance__buttons">
           <button
+            v-for="p in advancePresets"
+            :key="p.v"
             class="btn btn--plain btn--sm"
             :disabled="!canAdvance || advancing"
-            @click="advance(1)"
-          >推进 1 天</button>
-          <button
-            class="btn btn--plain btn--sm"
-            :disabled="!canAdvance || advancing"
-            @click="advance(5)"
-          >+5 天</button>
-          <button
-            class="btn btn--plain btn--sm"
-            :disabled="!canAdvance || advancing"
-            @click="advance(30)"
-          >+30 天</button>
+            @click="advance(p.v)"
+          >{{ p.label }}</button>
         </div>
       </section>
 
@@ -96,6 +88,8 @@
             <van-tab title="日K" name="daily" />
             <van-tab title="周K" name="weekly" />
             <van-tab title="月K" name="monthly" />
+            <van-tab title="30分" name="30" />
+            <van-tab title="60分" name="60" />
           </van-tabs>
         </div>
         <div class="chart-card__head" style="margin-top: var(--sp-2xl);">
@@ -321,8 +315,25 @@ const canTrade = computed(() =>
 )
 
 const periodLabel = computed(() =>
-  ({ daily: '交易日', weekly: '周', monthly: '月' }[period.value])
+  ({ daily: '交易日', weekly: '周', monthly: '月', '30': '30分钟', '60': '60分钟' }[period.value])
 )
+
+const isMinute = computed(() =>
+  !!session.value?.bar_period && Number(session.value.bar_period) !== 240
+)
+
+const revealText = computed(() => {
+  if (!session.value) return ''
+  if (isMinute.value) return (session.value.reveal_time || session.value.current_date || '').slice(0, 16)
+  return (session.value.current_date || '').slice(0, 10)
+})
+
+const advancePresets = computed(() => {
+  const bp = Number(session.value?.bar_period || 240)
+  if (bp === 60) return [{ label: '推进 1 根', v: 1 }, { label: '+8 根', v: 8 }, { label: '+40 根', v: 40 }]
+  if (bp === 30) return [{ label: '推进 1 根', v: 1 }, { label: '+16 根', v: 16 }, { label: '+80 根', v: 80 }]
+  return [{ label: '推进 1 天', v: 1 }, { label: '+5 天', v: 5 }, { label: '+30 天', v: 30 }]
+})
 
 const currentPrice = computed(() => {
   if (!klineBars.value.length) return 0
@@ -444,6 +455,10 @@ async function loadSession() {
   try {
     session.value = await trainApi.session(id.value)
     loadedSession.value = true
+    const bp = Number(session.value?.bar_period || 240)
+    if (bp === 30) period.value = '30'
+    else if (bp === 60) period.value = '60'
+    else period.value = 'daily'
   } catch (e) {
     showToast({ type: 'fail', message: e.message })
   } finally {
@@ -505,7 +520,15 @@ function renderKline() {
   const bars = klineBars.value
   if (!bars.length) { klineChart.clear(); return }
 
-  const dates = bars.map((b) => b.trade_date)
+  const dates = bars.map((b) => b.trade_time || b.trade_date)
+  const xLabel = (v) => {
+    if (!v) return ''
+    if (isMinute.value) {
+      const s = String(v)
+      return s.length >= 16 ? s.slice(11, 16) : s.slice(5)
+    }
+    return v.slice(5)
+  }
   const ohlc = bars.map((b) => [b.open, b.close, b.low, b.high])
   const volumes = bars.map((b) => ({
     value: b.volume,
@@ -590,7 +613,7 @@ function renderKline() {
       { type: 'category', data: dates, gridIndex: 1,
         axisLine: { lineStyle: { color: '#555' } },
         axisTick: { show: false },
-        axisLabel: { color: '#aaa', fontSize: 9, formatter: (v) => v?.slice(5) } },
+        axisLabel: { color: '#aaa', fontSize: 9, formatter: xLabel } },
     ],
     yAxis: [
       { scale: true, position: 'right',
@@ -659,10 +682,11 @@ function renderEquity() {
   }, true)
 }
 
-async function advance(days) {
+async function advance(n) {
   advancing.value = true
   try {
-    session.value = await trainApi.advance(id.value, days)
+    const payload = isMinute.value ? { bars: n } : { days: n }
+    session.value = await trainApi.advance(id.value, payload)
     await loadKline()
     await loadEquity()
     if (session.value?.current_date >= session.value?.end_date) {

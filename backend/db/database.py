@@ -42,6 +42,7 @@ USER_DB_TABLES: set[str] = {
     "training_order",
     "training_position",
     "training_equity",
+    "training_event",
     "admin_action_log",
     "train_token",
 }
@@ -714,6 +715,11 @@ def _init_db_sqlite(verbose: bool = True) -> None:
         # 2026-07-31 P2-3: 训练风控规则
         ensure_col_u("training_session", "auto_stop_loss_pct REAL DEFAULT 0", "auto_stop_loss_pct")
         ensure_col_u("training_session", "auto_take_profit_pct REAL DEFAULT 0", "auto_take_profit_pct")
+        # 2026-08-04 分钟级训练引擎: K线周期 / 游标 / 成交时间 / 快照时间
+        ensure_col_u("training_session", "bar_period INTEGER DEFAULT 240", "bar_period")
+        ensure_col_u("training_session", "reveal_time TEXT", "reveal_time")
+        ensure_col_u("training_order", "trade_time TEXT", "trade_time")
+        ensure_col_u("training_equity", "trade_time TEXT", "trade_time")
 
     if verbose:
         print(f"[DB] stock 数据库已初始化: {DB_PATH}")
@@ -770,6 +776,11 @@ def _init_db_pg(verbose: bool = True) -> None:
             pass
         ensure_col("training_session", "auto_stop_loss_pct REAL DEFAULT 0", "auto_stop_loss_pct")
         ensure_col("training_session", "auto_take_profit_pct REAL DEFAULT 0", "auto_take_profit_pct")
+        # 2026-08-04 分钟级训练引擎: K线周期 / 游标 / 成交时间 / 快照时间
+        ensure_col("training_session", "bar_period INTEGER DEFAULT 240", "bar_period")
+        ensure_col("training_session", "reveal_time TEXT", "reveal_time")
+        ensure_col("training_order", "trade_time TEXT", "trade_time")
+        ensure_col("training_equity", "trade_time TEXT", "trade_time")
 
         _seed_scheduler_jobs(conn)
 

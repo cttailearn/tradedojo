@@ -165,6 +165,8 @@
                 <el-radio-button value="daily">日 K</el-radio-button>
                 <el-radio-button value="weekly">周 K</el-radio-button>
                 <el-radio-button value="monthly">月 K</el-radio-button>
+                <el-radio-button value="30">30分</el-radio-button>
+                <el-radio-button value="60">60分</el-radio-button>
               </el-radio-group>
               <span class="hint">
                 当前价(收盘): ¥ {{ currentPrice.toFixed(2) }}
@@ -231,14 +233,16 @@
             </span>
           </h3>
           <div class="advance-row">
-            <el-button class="advance-btn" :disabled="!canAdvance || advancing"
-                       :loading="advancing" @click="advance(1)">
-              <el-icon><Right /></el-icon>推进 1 天
+            <el-button
+              v-for="p in advancePresets"
+              :key="p.v"
+              class="advance-btn"
+              :disabled="!canAdvance || advancing"
+              :loading="advancing"
+              @click="advance(p.v)"
+            >
+              <el-icon v-if="p.v === 1"><Right /></el-icon>{{ p.label }}
             </el-button>
-            <el-button class="advance-btn" :disabled="!canAdvance || advancing"
-                       :loading="advancing" @click="advance(5)">+5 天</el-button>
-            <el-button class="advance-btn" :disabled="!canAdvance || advancing"
-                       :loading="advancing" @click="advance(30)">+30 天</el-button>
           </div>
           <div class="advance-extra">
             <span class="hint" style="color:#909399; font-size:12px;">在顶部进度区已提供"结束训练 / 训练总结"</span>
@@ -569,7 +573,18 @@ const canTrade = computed(() => session.value?.status === 'active'
   && currentPrice.value > 0
   && !!session.value?.current_bar)
 
-const periodLabel = computed(() => ({ daily: '交易日', weekly: '周', monthly: '月' }[period.value]))
+const periodLabel = computed(() => ({ daily: '交易日', weekly: '周', monthly: '月', '30': '30分钟', '60': '60分钟' }[period.value]))
+
+const isMinute = computed(() =>
+  !!session.value?.bar_period && Number(session.value.bar_period) !== 240
+)
+
+const advancePresets = computed(() => {
+  const bp = Number(session.value?.bar_period || 240)
+  if (bp === 60) return [{ label: '推进 1 根', v: 1 }, { label: '+8 根', v: 8 }, { label: '+40 根', v: 40 }]
+  if (bp === 30) return [{ label: '推进 1 根', v: 1 }, { label: '+16 根', v: 16 }, { label: '+80 根', v: 80 }]
+  return [{ label: '推进 1 天', v: 1 }, { label: '+5 天', v: 5 }, { label: '+30 天', v: 30 }]
+})
 
 const currentPrice = computed(() => {
   if (!klineBars.value.length) return 0
@@ -721,6 +736,11 @@ async function loadSession() {
   try {
     session.value = await trainApi.session(id.value)
     loadedSession.value = true
+    // 分钟级 session 默认展示对应分钟周期
+    const bp = Number(session.value?.bar_period || 240)
+    if (bp === 30) period.value = '30'
+    else if (bp === 60) period.value = '60'
+    else period.value = 'daily'
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -963,7 +983,7 @@ function renderKline() {
     return
   }
 
-  const dates = bars.map((b) => b.trade_date)
+  const dates = bars.map((b) => b.trade_time || b.trade_date)
   const ohlc = bars.map((b) => [b.open, b.close, b.low, b.high])
 
   // 成交量(A股红涨绿跌)
@@ -1068,7 +1088,7 @@ function renderKline() {
         const arrow = chg >= 0 ? '▲' : '▼'
         return `<div style="line-height:1.7;">
           <div style="font-weight:bold; margin-bottom:6px; color:#fff; font-size:13px;">
-            ${bar.trade_date} <span style="color:${chgColor}; font-size:11px;">${arrow}</span>
+            ${bar.trade_time || bar.trade_date} <span style="color:${chgColor}; font-size:11px;">${arrow}</span>
           </div>
           <div><span style="color:#888;">开</span> <b style="color:#fff;">${Number(bar.open).toFixed(2)}</b>
             &nbsp;<span style="color:#888;">收</span> <b style="color:${chgColor};">${Number(bar.close).toFixed(2)}</b></div>

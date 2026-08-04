@@ -51,7 +51,12 @@ def _pick_random_stock(req: TrainingSetupRequest) -> dict:
       1. 用相同 where 拿到候选 code 列表(只查 stock_list,小表快);
       2. 随机选 1 个 code,单独校验 K 线覆盖度与 ST 状态;
       3. 不合格就再随机一个,最多 5 次,降级挑最宽松的版本.
+
+    2026-08-04 分钟级: bar_period in (30, 60) 时校验对象改为 kline_minute
+    (code+period),避免随机选到无分钟数据的股票导致 start 400。
     """
+    period = _session_period({"bar_period": req.bar_period})
+    is_minute = period in (30, 60)
     where = ["s.is_active = 1"]
     params = []
     if not req.allow_chinext:
@@ -71,6 +76,13 @@ def _pick_random_stock(req: TrainingSetupRequest) -> dict:
 
     base_where_sql = ' AND '.join(where)
     # Step 1: 拉候选(只查 stock_list,带可见字段)—— 通常几千行,几乎瞬间
+    if is_minute:
+        # 分钟模式: 直接把候选收敛到"该周期有分钟K线"的股票,
+        # 避免随机挑选 + 降级都落到无数据的股票导致 start 400。
+        base_where_sql += (
+            " AND s.code IN (SELECT DISTINCT code FROM kline_minute WHERE period = ?)"
+        )
+        params.append(period)
     rows = stock_query_all(
         f"SELECT s.code, s.name, s.industry, s.market FROM stock_list s "
         f"WHERE {base_where_sql} ORDER BY s.code ASC",
@@ -81,6 +93,15 @@ def _pick_random_stock(req: TrainingSetupRequest) -> dict:
     random.shuffle(rows)
 
     def _has_enough_kline(code: str) -> bool:
+        if is_minute:
+            # 分钟模式: 只看候选区间内是否有分钟K线(≥1 根即可,后续 start 会取首根)
+            cnt = stock_query_one(
+                "SELECT COUNT(*) FROM kline_minute "
+                "WHERE code = ? AND period = ? "
+                "  AND trade_time >= ? AND trade_time <= ?",
+                (code, period, req.start_date, f"{req.end_date} 23:59:59"),
+            )
+            return bool(cnt and (cnt[0] or 0) > 0)
         cnt = stock_query_one(
             "SELECT COUNT(*) FROM kline_daily "
             "WHERE code = ? AND adjust_type = 'qfq' "
@@ -106,6 +127,9 @@ def _pick_random_stock(req: TrainingSetupRequest) -> dict:
             continue
         if not _has_enough_kline(code):
             continue
+        if is_minute:
+            # 分钟模式: 区间内存在分钟K线即可(上面已校验),无需再查日线 MIN/MAX
+            return {"code": code, "name": name, "industry": industry, "market": market}
         # 还要求区间内全部存在(训练区间被节假日/退市切片):
         # 用 1 次 SELECT 看下 MIN/MAX
         rng = stock_query_one(
@@ -124,8 +148,39 @@ def _pick_random_stock(req: TrainingSetupRequest) -> dict:
     return {"code": code, "name": name, "industry": industry, "market": market}
 
 
-def _kline_in_window(code: str, start_date: str, end_date: str) -> list:
-    """读取某只股票在 [start, end] 区间的 K 线 (stock.db)"""
+def _session_period(sess: dict) -> int:
+    """返回会话 K 线周期:240=日线(默认), 30/60=分钟。
+    bar_period 缺失(旧数据)或解析失败一律视为 240, 保证日线零回归。
+    """
+    try:
+        v = int(sess.get("bar_period") or 240)
+    except Exception:
+        v = 240
+    return v
+
+
+def _kline_in_window(code: str, start_date: str, end_date: str, period: int = 240) -> list:
+    """读取某只股票在 [start, end] 区间的 K 线 (stock.db)。
+
+    2026-08-04 分钟级: period in (30, 60) 改查 kline_minute,
+    返回结构与日线同构(多带 trade_time 完整时间戳)。
+    """
+    if period in (30, 60):
+        rows = stock_query_all(
+            """SELECT trade_time, open, high, low, close, volume, amount
+               FROM kline_minute
+               WHERE code = ? AND period = ?
+                 AND trade_time >= ? AND trade_time <= ?
+               ORDER BY trade_time ASC""",
+            (code, period, start_date, end_date),
+        )
+        return [{
+            "trade_date": r[0][:10], "trade_time": r[0],
+            "open": r[1], "high": r[2], "low": r[3],
+            "close": r[4], "volume": r[5], "amount": r[6],
+            "pre_close": None, "change_amount": 0, "pct_change": 0,
+            "turnover_rate": None,
+        } for r in rows]
     rows = stock_query_all(
         """SELECT trade_date, open, high, low, close, pre_close,
                   change_amount, pct_change, volume, amount, turnover_rate
@@ -143,6 +198,10 @@ def _kline_in_window(code: str, start_date: str, end_date: str) -> list:
     } for r in rows]
 
 
+# 2026-08-04 分钟级: 必须与 training_session 的 SELECT * 实际列序一致。
+# 实测(迁移库 PRAGMA 确认):reveal_time/bar_period 由 ensure_col 以
+# ALTER TABLE ADD COLUMN 追加在末尾(auto_stop_* 后),而非 schema.sql 的
+# 全新建表顺序。日线回归:created_at/updated_at/auto_stop_* 均按该顺序对齐。
 SESSION_COLS = (
     "id", "user_id", "code", "name", "industry", "market",
     "start_date", "end_date", "lookback_months", "initial_cash",
@@ -150,6 +209,8 @@ SESSION_COLS = (
     "allow_split", "max_positions", "per_trade_amount", "allow_chinext",
     "allow_st", "allow_kcb", "allow_bj", "total_fee_paid", "status",
     "reveal_date", "created_at", "updated_at",
+    "auto_stop_loss_pct", "auto_take_profit_pct",
+    "bar_period", "reveal_time",
 )
 
 
@@ -243,7 +304,14 @@ def _build_session_view(session: dict) -> dict:
     #   - 从 session.start_date - lookback_months(历史回看)开始
     #   - 到 current_date(逐日推进揭示到这里)为止
     from datetime import datetime as _dt, timedelta as _td
-    current_dt = session.get("reveal_date") or session["start_date"]
+    period = _session_period(session)
+    is_minute = period in (30, 60)
+    # 分钟模式:current_dt 用 reveal_time 精确到 bar;日线模式用 reveal_date
+    current_dt = (
+        session.get("reveal_time")
+        if is_minute and session.get("reveal_time")
+        else (session.get("reveal_date") or session["start_date"])
+    )
     try:
         sd = _dt.strptime(session["start_date"], "%Y-%m-%d").date()
         # 历史回看月份
@@ -255,13 +323,17 @@ def _build_session_view(session: dict) -> dict:
         lookback_start = f"{year:04d}-{month:02d}-{sd.day:02d}"
     except Exception:
         lookback_start = session["start_date"]
-    revealed = _kline_in_window(code, lookback_start, current_dt)
-    # 若 reveal_date 是非交易日,把下一个交易日 bar 拼上,作为"当前可见 bar"
-    if revealed and revealed[-1]["trade_date"] < current_dt:
-        next_bar = _kline_in_window(code, current_dt, "2099-12-31")
+    revealed = _kline_in_window(code, lookback_start, current_dt, period)
+    # 分钟模式的 current_dt 已精确到特定 bar,末尾已恰好为揭示 bar;
+    # "reveal_date 非交易日顺延下一根" 逻辑仅保留日线模式(分钟模式跳过)。
+    if period == 240 and revealed and revealed[-1]["trade_date"] < current_dt:
+        next_bar = _kline_in_window(code, current_dt, "2099-12-31", period)
         if next_bar:
             revealed = revealed + [next_bar[0]]
     current_bar = revealed[-1] if revealed else None
+    # 统一给 current_bar 附上 trade_time(分钟模式为完整时间戳,日线为 None)
+    if current_bar is not None and "trade_time" not in current_bar:
+        current_bar = {**current_bar, "trade_time": None}
 
     # 2026-07-31 优化: 当前 bar 的涨跌停区间(供前端展示可成交价区间)
     price_limit = None
@@ -324,6 +396,8 @@ def _build_session_view(session: dict) -> dict:
         "start_date": session["start_date"],
         "end_date": session["end_date"],
         "current_date": current_dt,
+        "bar_period": period,
+        "reveal_time": session.get("reveal_time"),
         "lookback_months": session["lookback_months"],
         "initial_cash": session["initial_cash"],
         "status": session["status"],
@@ -374,7 +448,7 @@ def _calc_price_limit(code: str, name: str, pre_close: float) -> dict:
     }
 
 
-def _check_risk_rules(sess: dict, advance_dates: list, user_id: int) -> list:
+def _check_risk_rules(sess: dict, advance_dates: list, user_id: int, period: int = 240) -> list:
     """2026-07-31 P2-3 优化: 自动风控规则 - 止损/止盈触发后自动市价单成交。
     返回触发的 [{type, code, qty, price, pnl_pct, date}], 无触发返回 []。
     """
@@ -400,17 +474,28 @@ def _check_risk_rules(sess: dict, advance_dates: list, user_id: int) -> list:
         return []
 
     # 拉 advance 期间的 bar, 找首个触发日
+    # 分钟模式查 kline_minute(trade_time IN);日线模式查 kline_daily(trade_date IN)。
     placeholders = ",".join("?" * len(advance_dates))
-    bars = stock_query_all(
-        f"SELECT trade_date, open, high, low, close FROM kline_daily "
-        f"WHERE code = ? AND adjust_type = 'qfq' AND trade_date IN ({placeholders}) "
-        f"ORDER BY trade_date ASC",
-        (code, *advance_dates),
-    )
+    if period in (30, 60):
+        bars = stock_query_all(
+            f"SELECT trade_time, open, high, low, close FROM kline_minute "
+            f"WHERE code = ? AND period = ? AND trade_time IN ({placeholders}) "
+            f"ORDER BY trade_time ASC",
+            (code, period, *advance_dates),
+        )
+    else:
+        bars = stock_query_all(
+            f"SELECT trade_date, open, high, low, close FROM kline_daily "
+            f"WHERE code = ? AND adjust_type = 'qfq' AND trade_date IN ({placeholders}) "
+            f"ORDER BY trade_date ASC",
+            (code, *advance_dates),
+        )
     triggered = []
     triggered_today = set()
     for b in bars:
-        b_date, b_open, b_high, b_low, b_close = b
+        # 日期部分: 分钟模式取 trade_time 前 10 位(自然日), 日线模式即 trade_date 本身
+        b_date = b[0][:10]
+        b_open, b_high, b_low, b_close = b[1], b[2], b[3], b[4]
         # 跳过今天已触发的
         if b_date in triggered_today:
             continue
@@ -543,16 +628,27 @@ def _process_pending_orders(sess: dict, advance_dates: list, user_id: int) -> di
     # 解析 TTL
     stats = {"filled": 0, "expired": 0, "still_pending": 0}
     code = sess["code"]
+    # 2026-08-04 分钟级: 分钟模式用 kline_minute(trade_time 为 key), 日线用 kline_daily
+    period = _session_period(sess)
+    is_minute = period in (30, 60)
     # 拉 advance 期间的所有 bar (含 high/low/open/close)
     if advance_dates:
         placeholders = ",".join("?" * len(advance_dates))
-        bars = stock_query_all(
-            f"SELECT trade_date, open, high, low, close FROM kline_daily "
-            f"WHERE code = ? AND adjust_type = 'qfq' "
-            f"  AND trade_date IN ({placeholders}) "
-            f"ORDER BY trade_date ASC",
-            (code, *advance_dates),
-        )
+        if is_minute:
+            bars = stock_query_all(
+                f"SELECT trade_time, open, high, low, close FROM kline_minute "
+                f"WHERE code = ? AND period = ? AND trade_time IN ({placeholders}) "
+                f"ORDER BY trade_time ASC",
+                (code, period, *advance_dates),
+            )
+        else:
+            bars = stock_query_all(
+                f"SELECT trade_date, open, high, low, close FROM kline_daily "
+                f"WHERE code = ? AND adjust_type = 'qfq' "
+                f"  AND trade_date IN ({placeholders}) "
+                f"ORDER BY trade_date ASC",
+                (code, *advance_dates),
+            )
     else:
         bars = []
     bar_by_date = {b[0]: b for b in bars}
@@ -567,6 +663,8 @@ def _process_pending_orders(sess: dict, advance_dates: list, user_id: int) -> di
                 bar = bar_by_date.get(b_date)
                 if not bar:
                     continue
+                # 分钟模式 b_date 为完整 trade_time, T+1/订单 trade_date 用自然日部分
+                d_key = b_date[:10] if is_minute else b_date
                 _, b_open, b_high, b_low, b_close = bar
                 # 触及条件: low <= price <= high
                 if float(b_low) - 0.001 <= po_price <= float(b_high) + 0.001:
@@ -634,12 +732,12 @@ def _process_pending_orders(sess: dict, advance_dates: list, user_id: int) -> di
                         today_buy = (conn.execute(
                             "SELECT COALESCE(SUM(quantity), 0) FROM training_order "
                             "WHERE session_id = ? AND user_id = ? AND side = 'BUY' AND trade_date = ?",
-                            (sess["id"], user_id, b_date),
+                            (sess["id"], user_id, d_key),
                         ).fetchone() or (0,))[0] or 0
                         today_sell = (conn.execute(
                             "SELECT COALESCE(SUM(quantity), 0) FROM training_order "
                             "WHERE session_id = ? AND user_id = ? AND side = 'SELL' AND trade_date = ?",
-                            (sess["id"], user_id, b_date),
+                            (sess["id"], user_id, d_key),
                         ).fetchone() or (0,))[0] or 0
                         t1_locked = max(0, int(today_buy) - int(today_sell))
                         row = conn.execute(
@@ -680,20 +778,20 @@ def _process_pending_orders(sess: dict, advance_dates: list, user_id: int) -> di
                     # 标记订单为 filled, 写入实际成交价 + 重新计算的 fees
                     conn.execute(
                         "UPDATE training_order SET pending_status = 'filled', "
-                        "  trade_date = ?, price = ?, amount = ?, "
+                        "  trade_date = ?, trade_time = ?, price = ?, amount = ?, "
                         "  commission = ?, stamp_tax = ?, transfer_fee = ?, total_fee = ?, "
                         "  realized_pnl = COALESCE(realized_pnl, 0), "
                         "  note = ? "
                         "WHERE id = ?",
-                        (b_date, exec_price, trade_amount,
+                        (d_key, b_date if is_minute else None, exec_price, trade_amount,
                          fees["commission"], fees["stamp_tax"], fees["transfer_fee"], fees["total_fee"],
                          realized_pnl if po_side == "SELL" else 0,
-                         f"限价单于 {b_date} 触及 ¥{po_price:.2f} 成交 @ ¥{exec_price:.2f}",
+                         f"限价单于 {d_key} 触及 ¥{po_price:.2f} 成交 @ ¥{exec_price:.2f}",
                          po_id),
                     )
                     _record_event(
                         conn, sess["id"], user_id, "buy" if po_side == "BUY" else "sell",
-                        b_date,
+                        d_key,
                         payload={"order_id": po_id, "is_pending_filled": True,
                                  "exec_price": exec_price, "qty": po_qty},
                     )
@@ -708,7 +806,8 @@ def _process_pending_orders(sess: dict, advance_dates: list, user_id: int) -> di
                     try:
                         from datetime import datetime as _dt
                         created_dt = _dt.fromisoformat(po_created[:19] if po_created else "1970-01-01")
-                        last_advance = _dt.strptime(advance_dates[-1], "%Y-%m-%d")
+                        last_key = advance_dates[-1][:10] if is_minute else advance_dates[-1]
+                        last_advance = _dt.strptime(last_key, "%Y-%m-%d")
                         days_passed = (last_advance - created_dt).days
                         if days_passed > 20:
                             conn.execute(
@@ -777,6 +876,11 @@ def start_session(req: TrainingSetupRequest, request: Request, response: Respons
     # 训练费已取消,统一从 app/utils.calc_session_cost 取(恒为 0)
     session_cost = calc_session_cost(req.start_date, req.end_date, req.initial_cash)
 
+    # 2026-08-04 分钟级: 组合训练暂不接分钟K线(组合+分钟状态机过于复杂),
+    # 直接拒绝, 组合继续走日线老路径。
+    if req.is_portfolio and req.bar_period in (30, 60):
+        raise HTTPException(status_code=400, detail="组合训练暂不支持分钟K线")
+
     # 2026-07-31 优化: 组合训练模式 (P2-2)
     if req.is_portfolio:
         return _start_portfolio_sessions(req, user, session_cost)
@@ -835,15 +939,43 @@ def start_session(req: TrainingSetupRequest, request: Request, response: Respons
             req_sub = TrainingSetupRequest(**req_dict)
             stock = _pick_random_stock(req_sub)
 
+            # 2026-08-04 分钟级: 会话 K 线周期
+            period = int(req.bar_period or 240)
+            is_minute = period in (30, 60)
+
             # 初始揭示 = 训练开始日,但若 start_date 是节假日/周末没有 K 线,
             # 自动顺延到该股票的下个实际交易日,否则前端会拿到空 K 线图
-            # 注意:用户会话在 user_tx 内,但 kline_daily 在 stock.db,必须单独查
-            kline_row = stock_query_one(
-                "SELECT MIN(trade_date) FROM kline_daily "
-                "WHERE code = ? AND adjust_type = 'qfq' AND trade_date >= ?",
-                (stock["code"], req.start_date),
-            )
-            current_dt = (kline_row[0] if kline_row and kline_row[0] else req.start_date)
+            # 注意:用户会话在 user_tx 内,但 kline_daily/kline_minute 在 stock.db,必须单独查
+            if is_minute:
+                # 分钟模式: 首根 bar(trade_time) >= start_date 作为初始揭示。
+                # 先做数据覆盖校验: code+period 在 [start_date, end_date] 内无数据 → 400。
+                cov = stock_query_one(
+                    "SELECT COUNT(*) FROM kline_minute " 
+                    "WHERE code = ? AND period = ? AND trade_time >= ? AND trade_time <= ?",
+                    (stock["code"], period, req.start_date, f"{req.end_date} 23:59:59"),
+                )
+                if not cov or (cov[0] or 0) == 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"该股票在所选区间无 {period}分钟K线数据,请调整训练日期",
+                    )
+                mrow = stock_query_one(
+                    "SELECT MIN(trade_time) FROM kline_minute "
+                    "WHERE code = ? AND period = ? AND trade_time >= ?",
+                    (stock["code"], period, req.start_date),
+                )
+                current_dt = (mrow[0] if mrow and mrow[0] else req.start_date)
+                reveal_date_val = current_dt[:10]
+                reveal_time_val = current_dt
+            else:
+                kline_row = stock_query_one(
+                    "SELECT MIN(trade_date) FROM kline_daily "
+                    "WHERE code = ? AND adjust_type = 'qfq' AND trade_date >= ?",
+                    (stock["code"], req.start_date),
+                )
+                current_dt = (kline_row[0] if kline_row and kline_row[0] else req.start_date)
+                reveal_date_val = current_dt
+                reveal_time_val = None
 
             cur = conn.execute(
                 """INSERT INTO training_session(
@@ -852,14 +984,14 @@ def start_session(req: TrainingSetupRequest, request: Request, response: Respons
                     commission_rate, min_commission, stamp_tax, transfer_fee,
                     allow_split, max_positions, per_trade_amount,
                     allow_chinext, allow_st, allow_kcb, allow_bj,
-                    total_fee_paid, status, reveal_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)""",
+                    total_fee_paid, status, reveal_date, bar_period, reveal_time
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
                 (user["id"], stock["code"], stock["name"], stock["industry"], stock["market"],
                  req.start_date, req.end_date, req.lookback_months, session_initial_cash,
                  req.commission_rate, req.min_commission, req.stamp_tax, req.transfer_fee,
                  int(req.allow_split), req.max_positions, req.per_trade_amount,
                  int(req.allow_chinext), int(req.allow_st), int(req.allow_kcb), int(req.allow_bj),
-                 session_cost, current_dt),
+                 session_cost, reveal_date_val, period, reveal_time_val),
             )
             sid_raw = cur.lastrowid
             if not sid_raw:
@@ -871,9 +1003,9 @@ def start_session(req: TrainingSetupRequest, request: Request, response: Respons
             sid = int(sid_raw)
             # 初始权益 = 本场训练的初始资金(钱包不再被扣训练费)
             conn.execute(
-                "INSERT INTO training_equity(session_id, trade_date, cash, market_value, total_equity) "
-                "VALUES(?, ?, ?, 0, ?)",
-                (sid, current_dt, session_initial_cash, session_initial_cash),
+                "INSERT INTO training_equity(session_id, trade_date, trade_time, cash, market_value, total_equity) "
+                "VALUES(?, ?, ?, ?, 0, ?)",
+                (sid, reveal_date_val, reveal_time_val, session_initial_cash, session_initial_cash),
             )
 
         # 重新读取
@@ -1351,23 +1483,46 @@ def advance(session_id: int, req: AdvanceRequest, request: Request, response: Re
     if sess["status"] != "active":
         raise HTTPException(status_code=400, detail="该训练已结束")
 
-    # 找接下来 N 个交易日 (<= end_date)
-    rows = stock_query_all(
-        "SELECT trade_date FROM kline_daily "
-        "WHERE code = ? AND adjust_type = 'qfq' AND trade_date > ? AND trade_date <= ? "
-        "ORDER BY trade_date ASC LIMIT ?",
-        (sess["code"], sess["reveal_date"], sess["end_date"], req.days),
-    )
-    if not rows:
-        raise HTTPException(status_code=400, detail="已到达训练终点")
-    new_current = rows[-1][0]
-    advance_dates = [r[0] for r in rows]
+    # 2026-08-04 分钟级: 分钟模式按根推进, 日线模式按交易日推进
+    period = _session_period(sess)
+    is_minute = period in (30, 60)
+    if is_minute:
+        # 推进 bar 数: req.bars 优先, 否则按 days 换算 (旧前端只传 days)
+        n_bars = req.bars if req.bars is not None else req.days * (16 if period == 30 else 8)
+        cur_reveal = sess.get("reveal_time") or sess["reveal_date"] or sess["start_date"]
+        mrows = stock_query_all(
+            "SELECT trade_time FROM kline_minute "
+            "WHERE code = ? AND period = ? AND trade_time > ? AND trade_time <= ? "
+            "ORDER BY trade_time ASC LIMIT ?",
+            (sess["code"], period, cur_reveal, f"{sess['end_date']} 23:59:59", n_bars),
+        )
+        if not mrows:
+            raise HTTPException(status_code=400, detail="已到达训练终点")
+        new_current = mrows[-1][0]
+        advance_dates = [r[0] for r in mrows]
+        execute(
+            "UPDATE training_session SET reveal_time = ?, reveal_date = ?, "
+            "updated_at = datetime('now','localtime') WHERE id = ?",
+            (new_current, new_current[:10], sess["id"]),
+        )
+    else:
+        # 找接下来 N 个交易日 (<= end_date)
+        rows = stock_query_all(
+            "SELECT trade_date FROM kline_daily "
+            "WHERE code = ? AND adjust_type = 'qfq' AND trade_date > ? AND trade_date <= ? "
+            "ORDER BY trade_date ASC LIMIT ?",
+            (sess["code"], sess["reveal_date"], sess["end_date"], req.days),
+        )
+        if not rows:
+            raise HTTPException(status_code=400, detail="已到达训练终点")
+        new_current = rows[-1][0]
+        advance_dates = [r[0] for r in rows]
 
-    execute(
-        "UPDATE training_session SET reveal_date = ?, updated_at = datetime('now','localtime') "
-        "WHERE id = ?",
-        (new_current, sess["id"]),
-    )
+        execute(
+            "UPDATE training_session SET reveal_date = ?, updated_at = datetime('now','localtime') "
+            "WHERE id = ?",
+            (new_current, sess["id"]),
+        )
 
     # 2026-07-31 优化: 处理 pending 限价单
     # 1) 触及限价 → 立即成交 (更新 order 状态 + 持仓 + 钱包)
@@ -1376,38 +1531,46 @@ def advance(session_id: int, req: AdvanceRequest, request: Request, response: Re
     _process_pending_orders(sess, advance_dates, user["id"])
 
     # 2026-07-31 优化: 自动风控 (止损/止盈) 触发
-    risk_triggered = _check_risk_rules(sess, advance_dates, user["id"])
+    risk_triggered = _check_risk_rules(sess, advance_dates, user["id"], period)
     if risk_triggered:
         _auto_execute_risk_orders(sess, user["id"], risk_triggered)
 
     # 现金 = 当前钱包余额(共用资金)
     cash = _wallet_balance(user["id"])
 
-    # 一次拉所有持仓代码的 close 列(逐日 close),用于插每个揭示日的权益快照
+    # 一次拉所有持仓代码的 close 列(逐 bar/日 close),用于插每个揭示 bar 的权益快照
     pos_codes = query_all(
         "SELECT code FROM training_position WHERE session_id = ? AND quantity > 0",
         (sess["id"],),
     )
     if pos_codes:
         code_list = [c[0] for c in pos_codes]
-        placeholders = ",".join("?" * len(code_list))
-        close_map = {}   # code -> { trade_date -> close }
-        for r in stock_query_all(
-            f"SELECT code, trade_date, close FROM kline_daily "
-            f"WHERE code IN ({placeholders}) AND adjust_type = 'qfq' "
-            f"  AND trade_date IN ({','.join('?'*len(advance_dates))})",
-            tuple(code_list) + tuple(advance_dates),
-        ):
-            close_map.setdefault(r[0], {})[r[1]] = r[2]
+        close_map = {}   # code -> { key(trade_time or trade_date) -> close }
+        if is_minute:
+            for r in stock_query_all(
+                f"SELECT code, trade_time, close FROM kline_minute "
+                f"WHERE code IN ({','.join('?'*len(code_list))}) AND period = ? "
+                f"  AND trade_time IN ({','.join('?'*len(advance_dates))})",
+                tuple(code_list) + (period,) + tuple(advance_dates),
+            ):
+                close_map.setdefault(r[0], {})[r[1]] = r[2]
+        else:
+            for r in stock_query_all(
+                f"SELECT code, trade_date, close FROM kline_daily "
+                f"WHERE code IN ({','.join('?'*len(code_list))}) AND adjust_type = 'qfq' "
+                f"  AND trade_date IN ({','.join('?'*len(advance_dates))})",
+                tuple(code_list) + tuple(advance_dates),
+            ):
+                close_map.setdefault(r[0], {})[r[1]] = r[2]
     else:
         close_map = {}
 
     with get_conn() as conn:
-        # 每个揭示日插 1 条 equity 快照,曲线连续
+        # 每个揭示 bar 插 1 条 equity 快照,曲线连续
         for d in advance_dates:
             mv = 0.0
             for c in close_map:
-                # 持仓仅显示在 start_date 之后开仓的部分;这里用当前持仓量*该日 close
+                # 持仓仅显示在 start_date 之后开仓的部分;这里用当前持仓量*该 bar close
                 pos = query_one(
                     "SELECT quantity, avg_cost FROM training_position "
                     "WHERE session_id = ? AND code = ?",
@@ -1418,29 +1581,52 @@ def advance(session_id: int, req: AdvanceRequest, request: Request, response: Re
                 qty, avg_cost = pos
                 px = close_map[c].get(d, avg_cost or 0)
                 mv += qty * px
-            conn.execute(
-                "INSERT INTO training_equity(session_id, trade_date, cash, market_value, total_equity) "
-                "VALUES(?, ?, ?, ?, ?)",
-                (sess["id"], d, cash, mv, cash + mv),
+            if is_minute:
+                conn.execute(
+                    "INSERT INTO training_equity(session_id, trade_date, trade_time, cash, market_value, total_equity) "
+                    "VALUES(?, ?, ?, ?, ?, ?)",
+                    (sess["id"], d[:10], d, cash, mv, cash + mv),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO training_equity(session_id, trade_date, cash, market_value, total_equity) "
+                    "VALUES(?, ?, ?, ?, ?)",
+                    (sess["id"], d, cash, mv, cash + mv),
+                )
+        # 2026-07-31 P1-12: 记录 advance 事件 (分钟模式记 bars + reveal_time)
+        if is_minute:
+            _record_event(
+                conn, sess["id"], user["id"], "advance", new_current[:10],
+                payload={
+                    "bars": len(advance_dates),
+                    "days": req.days,
+                    "advance_dates": advance_dates,
+                    "new_reveal_time": new_current,
+                    "new_reveal_date": new_current[:10],
+                },
+                snapshot={
+                    "prev_reveal_date": sess["reveal_date"],
+                    "prev_reveal_time": sess.get("reveal_time"),
+                },
             )
-        # 2026-07-31 P1-12: 记录 advance 事件
-        _record_event(
-            conn, sess["id"], user["id"], "advance", new_current,
-            payload={
-                "days": req.days,
-                "advance_dates": advance_dates,
-                "new_reveal_date": new_current,
-            },
-            snapshot={"prev_reveal_date": sess["reveal_date"]},
-        )
+        else:
+            _record_event(
+                conn, sess["id"], user["id"], "advance", new_current,
+                payload={
+                    "days": req.days,
+                    "advance_dates": advance_dates,
+                    "new_reveal_date": new_current,
+                },
+                snapshot={"prev_reveal_date": sess["reveal_date"]},
+            )
 
     return get_session(session_id, user=user)
 
 
 @router.get("/sessions/{session_id}/kline")
-def session_kline(session_id: int, period: str = Query("daily", pattern="^(daily|weekly|monthly)$"),
+def session_kline(session_id: int, period: str = Query("daily", pattern="^(daily|weekly|monthly|30|60)$"),
                   user: dict = Depends(get_current_train_user)):
-    """返回已揭示的日/周/月 K 线(含 lookback_months 历史回看)"""
+    """返回已揭示的日/周/月/30分/60分 K 线(含 lookback_months 历史回看)"""
     sess = _session_for_user(user["id"], session_id)
     reveal_date = sess["reveal_date"] or sess["start_date"]
     # 与 _build_session_view 保持一致:从 start_date - lookback_months 起
@@ -1456,6 +1642,11 @@ def session_kline(session_id: int, period: str = Query("daily", pattern="^(daily
         lookback_start = f"{year:04d}-{month:02d}-{sd.day:02d}"
     except Exception:
         lookback_start = sess["start_date"]
+    # 2026-08-04 分钟级: period=30/60 直接查 kline_minute, 揭示终点用 reveal_time
+    if period in ("30", "60"):
+        reveal_end = sess.get("reveal_time") or reveal_date
+        minute_items = _kline_in_window(sess["code"], lookback_start, reveal_end, int(period))
+        return {"period": period, "items": minute_items}
     daily = _kline_in_window(sess["code"], lookback_start, reveal_date)
     # 如果 reveal_date 落在非交易日(节假日),顺延到下一个交易日,以保证至少返回当前 bar
     if daily and daily[-1]["trade_date"] < reveal_date:
@@ -1501,7 +1692,7 @@ def equity_curve(session_id: int, user: dict = Depends(get_current_train_user)):
     """资金曲线 (2026-07-31 优化: 附带沪深 300 + 买入持有基准对比)"""
     sess = _session_for_user(user["id"], session_id)
     rows = query_all(
-        "SELECT trade_date, cash, market_value, total_equity FROM training_equity "
+        "SELECT trade_date, trade_time, cash, market_value, total_equity FROM training_equity "
         "WHERE session_id = ? ORDER BY trade_date ASC, id ASC",
         (sess["id"],),
     )
@@ -1516,9 +1707,13 @@ def equity_curve(session_id: int, user: dict = Depends(get_current_train_user)):
     initial_cash = float(sess["initial_cash"] or 0)
     dates = [r[0] for r in rows]
     items = [{
-        "trade_date": r[0], "cash": r[1],
-        "market_value": r[2], "total_equity": r[3],
+        "trade_date": r[0], "trade_time": r[1],
+        "cash": r[2], "market_value": r[3], "total_equity": r[4],
     } for r in rows]
+
+    # 2026-08-04 分钟级: 基准对比按自然日去重(同一自然日多根 bar 共用一个基准日)
+    is_minute = _session_period(sess) in (30, 60)
+    bench_dates = sorted(set(d[:10] for d in dates)) if is_minute else dates
 
     # 沪深 300 同期 (拉 start_date 收盘 + 每日收盘, 按 initial_cash 折算)
     hs_start = stock_query_one(
@@ -1528,12 +1723,12 @@ def equity_curve(session_id: int, user: dict = Depends(get_current_train_user)):
     benchmark_hs300 = []
     if hs_start and hs_start[0]:
         hs0 = float(hs_start[0])
-        placeholders = ",".join("?" * len(dates))
+        placeholders = ",".join("?" * len(bench_dates))
         for r in stock_query_all(
             f"SELECT trade_date, close FROM index_daily "
             f"WHERE code = 'sh000300' AND trade_date IN ({placeholders}) "
             f"ORDER BY trade_date ASC",
-            tuple(dates),
+            tuple(bench_dates),
         ):
             ratio = float(r[1]) / hs0
             benchmark_hs300.append({
@@ -1549,12 +1744,12 @@ def equity_curve(session_id: int, user: dict = Depends(get_current_train_user)):
     benchmark_buy_hold = []
     if code_start and code_start[0]:
         cs0 = float(code_start[0])
-        placeholders = ",".join("?" * len(dates))
+        placeholders = ",".join("?" * len(bench_dates))
         for r in stock_query_all(
             f"SELECT trade_date, close FROM kline_daily "
             f"WHERE code = ? AND adjust_type = 'qfq' AND trade_date IN ({placeholders}) "
             f"ORDER BY trade_date ASC",
-            (sess["code"], *dates),
+            (sess["code"], *bench_dates),
         ):
             ratio = float(r[1]) / cs0
             benchmark_buy_hold.append({
@@ -1581,14 +1776,28 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
     if side not in ("BUY", "SELL"):
         raise HTTPException(status_code=400, detail="side 必须是 BUY/SELL")
 
-    current_dt = sess["reveal_date"] or sess["start_date"]
-    # 撮合价取<reveal_date 及之后>的第一根 bar(若 reveal 是节假日则下一交易日)
-    bar_row = stock_query_one(
-        "SELECT trade_date, open, high, low, close FROM kline_daily "
-        "WHERE code = ? AND adjust_type = 'qfq' AND trade_date >= ? "
-        "ORDER BY trade_date ASC LIMIT 1",
-        (sess["code"], current_dt),
-    )
+    # 2026-08-04 分钟级: 分钟模式 current_dt 精确到 bar(reveal_time), 日线用 reveal_date
+    period = _session_period(sess)
+    is_minute = period in (30, 60)
+    if is_minute:
+        current_dt = sess.get("reveal_time") or sess["reveal_date"] or sess["start_date"]
+    else:
+        current_dt = sess["reveal_date"] or sess["start_date"]
+    # 撮合价取<current_dt 及之后>的第一根 bar(若 reveal 是节假日/停牌则下一根)
+    if is_minute:
+        bar_row = stock_query_one(
+            "SELECT trade_time, open, high, low, close FROM kline_minute "
+            "WHERE code = ? AND period = ? AND trade_time >= ? "
+            "ORDER BY trade_time ASC LIMIT 1",
+            (sess["code"], period, current_dt),
+        )
+    else:
+        bar_row = stock_query_one(
+            "SELECT trade_date, open, high, low, close FROM kline_daily "
+            "WHERE code = ? AND adjust_type = 'qfq' AND trade_date >= ? "
+            "ORDER BY trade_date ASC LIMIT 1",
+            (sess["code"], current_dt),
+        )
     if not bar_row:
         raise HTTPException(status_code=400, detail="当前还未揭示 K 线")
     # bar: (open, high, low, close)
@@ -1596,13 +1805,32 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
 
     # 2026-07-31 优化: 涨跌停校验 (A 股规则)
     # 创业板(30x)/科创板(688) 限 ±20%, ST 股限 ±5%, 其他 ±10%
-    pre_close_row = stock_query_one(
-        "SELECT close FROM kline_daily "
-        "WHERE code = ? AND adjust_type = 'qfq' AND trade_date < ? "
-        "ORDER BY trade_date DESC LIMIT 1",
-        (sess["code"], bar_row[0]),
-    )
-    pre_close = float(pre_close_row[0]) if pre_close_row and pre_close_row[0] else float(bar[3])
+    # 2026-08-04 分钟级: 分钟模式昨收用"前一根分钟 bar close", 无则 fallback kline_daily 前一日
+    if is_minute:
+        pre_min_row = stock_query_one(
+            "SELECT close FROM kline_minute "
+            "WHERE code = ? AND period = ? AND trade_time < ? "
+            "ORDER BY trade_time DESC LIMIT 1",
+            (sess["code"], period, bar_row[0]),
+        )
+        if pre_min_row and pre_min_row[0]:
+            pre_close = float(pre_min_row[0])
+        else:
+            pre_daily_row = stock_query_one(
+                "SELECT close FROM kline_daily "
+                "WHERE code = ? AND adjust_type = 'qfq' AND trade_date < ? "
+                "ORDER BY trade_date DESC LIMIT 1",
+                (sess["code"], bar_row[0][:10]),
+            )
+            pre_close = float(pre_daily_row[0]) if pre_daily_row and pre_daily_row[0] else float(bar[3])
+    else:
+        pre_close_row = stock_query_one(
+            "SELECT close FROM kline_daily "
+            "WHERE code = ? AND adjust_type = 'qfq' AND trade_date < ? "
+            "ORDER BY trade_date DESC LIMIT 1",
+            (sess["code"], bar_row[0]),
+        )
+        pre_close = float(pre_close_row[0]) if pre_close_row and pre_close_row[0] else float(bar[3])
     name = (sess.get("name") or "").upper()
     code = sess.get("code") or ""
     is_st = "ST" in name
@@ -1616,7 +1844,9 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
         limit_pct = 0.10
     upper_limit = pre_close * (1 + limit_pct)
     lower_limit = pre_close * (1 - limit_pct)
-    trade_date = bar_row[0]   # 实际撮合交易日(可能不是 reveal_date 本身)
+    # 实际撮合 bar: 分钟模式 trade_date=自然日, trade_time=完整 bar; 日线 trade_date=交易日
+    trade_date = bar_row[0][:10] if is_minute else bar_row[0]
+    trade_time_val = bar_row[0] if is_minute else None
 
     # 撮合价默认按 open(P0-4 修复,2026-07-31 起,符合"次日开盘成交"的真实体感)
     price = req.price if req.price else float(bar[0])
@@ -1703,10 +1933,10 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
 
             cur = conn.execute(
                 """INSERT INTO training_order(
-                    session_id, user_id, trade_date, side, price, quantity, amount,
+                    session_id, user_id, trade_date, trade_time, side, price, quantity, amount,
                     commission, stamp_tax, transfer_fee, total_fee, pending_status
-                ) VALUES(?, ?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (sess["id"], user["id"], trade_date,
+                ) VALUES(?, ?, ?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sess["id"], user["id"], trade_date, trade_time_val,
                  price, qty, trade_amount,
                  fees["commission"], fees["stamp_tax"], fees["transfer_fee"], fees["total_fee"],
                  "pending" if is_pending_order else "filled"),
@@ -1777,6 +2007,8 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
             if not req.quantity or req.quantity <= 0:
                 raise HTTPException(status_code=400, detail="请填写卖出股数")
             qty = int(req.quantity)
+            # 2026-08-04 修复: snapshot 记录 prev_balance 需要当前余额(BUY 分支已读,SELL 分支此前漏读)
+            cash = _wallet_for_update_in_conn(conn, user["id"])
             row = conn.execute(
                 "SELECT quantity, avg_cost FROM training_position WHERE session_id = ? AND code = ?",
                 (sess["id"], sess["code"]),
@@ -1826,10 +2058,10 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
 
             cur = conn.execute(
                 """INSERT INTO training_order(
-                    session_id, user_id, trade_date, side, price, quantity, amount,
+                    session_id, user_id, trade_date, trade_time, side, price, quantity, amount,
                     commission, stamp_tax, transfer_fee, total_fee, realized_pnl, pending_status
-                ) VALUES(?, ?, ?, 'SELL', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (sess["id"], user["id"], trade_date,
+                ) VALUES(?, ?, ?, ?, 'SELL', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (sess["id"], user["id"], trade_date, trade_time_val,
                  price, qty, trade_amount,
                  fees["commission"], fees["stamp_tax"], fees["transfer_fee"],
                  fees["total_fee"], round(realized_pnl, 2),
@@ -1914,7 +2146,7 @@ def finish(session_id: int, user: dict = Depends(get_current_train_user)):
             execute(
                 "INSERT INTO training_event(session_id, user_id, event_type, payload_json) "
                 "VALUES(?, ?, 'finish', ?)",
-                (session_id, user["id"], json.dumps({"finished_at": datetime.now().isoformat()})),
+                (session_id, user["id"], _json.dumps({"finished_at": datetime.now().isoformat()})),
             )
         except Exception as e:
             log.warning(f"[rollback] 记 finish event 失败: {e}")
@@ -2076,27 +2308,45 @@ def rollback(session_id: int, request: Request, response: Response,
             )
 
         elif event_type == "advance":
-            # 删除该次 advance 产生的 equity 快照 + 回滚 reveal_date
+            # 删除该次 advance 产生的 equity 快照 + 回滚 reveal_date/reveal_time
             days = int(payload.get("days", 0))
             advance_dates = payload.get("advance_dates", [])
+            # 2026-08-04 分钟级: advance_dates 为完整 trade_time(含 ':')→ 按 trade_time 删;
+            # 日线为 trade_date → 按 trade_date 删。
             if advance_dates:
                 placeholders = ",".join("?" * len(advance_dates))
-                conn.execute(
-                    f"DELETE FROM training_equity "
-                    f"WHERE session_id = ? AND trade_date IN ({placeholders})",
-                    (sess["id"], *advance_dates),
-                )
-            # 回滚 reveal_date
+                if any(":" in str(a) for a in advance_dates):
+                    conn.execute(
+                        f"DELETE FROM training_equity "
+                        f"WHERE session_id = ? AND trade_time IN ({placeholders})",
+                        (sess["id"], *advance_dates),
+                    )
+                else:
+                    conn.execute(
+                        f"DELETE FROM training_equity "
+                        f"WHERE session_id = ? AND trade_date IN ({placeholders})",
+                        (sess["id"], *advance_dates),
+                    )
+            # 回滚 reveal_time(分钟模式) + reveal_date(两者)
             prev_reveal = snapshot.get("prev_reveal_date") or sess["start_date"]
-            conn.execute(
-                "UPDATE training_session SET reveal_date = ?, "
-                "updated_at = datetime('now', 'localtime') WHERE id = ?",
-                (prev_reveal, sess["id"]),
-            )
+            prev_reveal_time = snapshot.get("prev_reveal_time")
+            if prev_reveal_time:
+                conn.execute(
+                    "UPDATE training_session SET reveal_date = ?, reveal_time = ?, "
+                    "updated_at = datetime('now', 'localtime') WHERE id = ?",
+                    (prev_reveal_time[:10], prev_reveal_time, sess["id"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE training_session SET reveal_date = ?, "
+                    "updated_at = datetime('now', 'localtime') WHERE id = ?",
+                    (prev_reveal, sess["id"]),
+                )
             _record_event(
                 conn, sess["id"], user["id"], "rollback", trade_date,
                 payload={"of_event_id": last_id, "of_event_type": "advance",
-                         "days": days, "prev_reveal_date": prev_reveal},
+                         "days": days, "prev_reveal_date": prev_reveal,
+                         "prev_reveal_time": prev_reveal_time},
             )
 
         elif event_type == "finish":

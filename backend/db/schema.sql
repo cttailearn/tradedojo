@@ -154,6 +154,8 @@ CREATE TABLE IF NOT EXISTS training_session (
     total_fee_paid  REAL DEFAULT 0,                 -- 本次会话消耗的训练资金
     status          TEXT DEFAULT 'active',          -- active / finished
     reveal_date     TEXT,                           -- 已揭示到的日期 (粘性推进)
+    reveal_time     TEXT,                           -- 2026-08-04 分钟级: 已揭示到的最新 bar trade_time (日线为 NULL)
+    bar_period      INTEGER DEFAULT 240,            -- 2026-08-04 分钟级: K线周期 240=日线 / 30 / 60 (分钟)
     auto_stop_loss_pct  REAL DEFAULT 0,            -- 2026-07-31 P2-3: 自动止损比例 (0=关闭, e.g. 0.08)
     auto_take_profit_pct REAL DEFAULT 0,            -- 2026-07-31 P2-3: 自动止盈比例 (0=关闭)
     created_at      TEXT DEFAULT (datetime('now', 'localtime')),
@@ -167,7 +169,8 @@ CREATE TABLE IF NOT EXISTS training_order (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id      INTEGER NOT NULL,
     user_id         INTEGER NOT NULL,
-    trade_date      TEXT NOT NULL,                  -- 撮合交易日(=当时的 current_date)
+    trade_date      TEXT NOT NULL,                  -- 撮合交易日(=当时的 current_date, 分钟模式取 bar 日期部分, 供 T+1 按自然日聚合)
+    trade_time      TEXT,                           -- 2026-08-04 分钟级: 成交 bar 的 trade_time (日线为 NULL)
     side            TEXT NOT NULL,                  -- BUY / SELL
     price           REAL NOT NULL,                  -- 限价单的目标价 / 即时单的成交价
     quantity        INTEGER NOT NULL,
@@ -203,6 +206,7 @@ CREATE TABLE IF NOT EXISTS training_equity (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id      INTEGER NOT NULL,
     trade_date      TEXT NOT NULL,
+    trade_time      TEXT,                           -- 2026-08-04 分钟级: 快照 bar 的 trade_time (日线为 NULL)
     cash            REAL NOT NULL,
     market_value    REAL NOT NULL,
     total_equity    REAL NOT NULL,
