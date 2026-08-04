@@ -114,6 +114,13 @@ export const trainApi = {
   indices: () => api.get('/train/indices'),
   indexKline: (code, params = {}) =>
     api.get('/train/indices/kline', { params: { code, ...params } }),
+
+  // 训练端可用的行业列表 (2026-08-04 P0-3 修复)
+  // 旧版 Setup.vue 调用 stocksApi.industries(), 该接口强制 require_admin
+  // → 训练用户无 admin token 触发 401 → axios 拦截器误判为 train auth 失败
+  // → 用户被踢回登录页 ("用户端登录已过期")。
+  // 改用本端点走 train cookie 即可拿到行业列表。
+  industries: () => api.get('/train/industries'),
   createRedeemCodes: (amount, count, note) =>
     api.post('/train/admin/redeem-codes', { amount, count, note }),
 

@@ -112,9 +112,31 @@ api.interceptors.response.use(
       const onTrainPage = path === '/' || path.startsWith('/train')
       // URL 维度:谁家的请求(只用于"URL 决定 app 走向"这一层)
       const isTrainUrl = url.includes('/train/') && !url.includes('/train/admin/')
-      let app = 'admin'
+      const isAdminUrl = url.includes('/auth/')
+        || url.includes('/stocks')
+        || url.includes('/kline')
+        || url.includes('/tasks')
+        || url.includes('/backtest')
+        || url.includes('/system')
+        || url.includes('/scheduler')
+        || url.includes('/sources')
+        || url.includes('/kronos')
+        || url.includes('/train/admin/')
+      // 2026-08-04 P0-3 修复: 只有当 URL 明确属于 train 或 admin 时,
+      // 才用 app 走对应的 refresh + 清空 + 跳登录 流程。
+      // 当 URL 不属于任一方(第三方/未知/调试接口), 不要被当前所在页面
+      // (onTrainPage / onAdminPage) 误导, 否则会出现这种灾难场景:
+      //   - 训练用户在 /train/setup 页面
+      //   - Setup.vue 调了 /api/stocks/industries (admin 接口, 需 admin token)
+      //   - 训练用户没 admin token → 401
+      //   - 旧逻辑: onTrainPage=true → app='train' → refresh + 清空 train auth
+      //     + "用户端登录已过期" → 用户被踢回登录页
+      //   - 新逻辑: isTrainUrl=false 且 isAdminUrl=false → app='unknown'
+      //     → 抛 'unknown_app_401' 错误, 让上层自己处理 (例如 Setup.vue 的
+      //     .catch(() => ({ items: [] })) 会吞掉, 用户无感知)
+      let app = 'unknown'
       if (isTrainUrl) app = 'train'
-      else if (onTrainPage && !onAdminPage) app = 'train'
+      else if (isAdminUrl) app = 'admin'
 
       // 训练端 401 → 尝试 refresh(未重试过 + 非 /refresh/ /login/ /register/ 自身)
       const isAuthEndpoint = /\/(refresh|login|register|logout)(\/|$|\?)/.test(url)
@@ -135,7 +157,7 @@ api.interceptors.response.use(
           ElMessage.error('用户端登录已过期,请重新登录')
           router.push({ path: '/', query: { redirect: path } })
         }
-      } else {
+      } else if (app === 'admin') {
         const auth = useAuthStore()
         auth.clear()
         if (path !== '/admin/login') {
@@ -143,7 +165,11 @@ api.interceptors.response.use(
           router.push({ path: '/admin/login', query: { redirect: path } })
         }
       }
-      return Promise.reject(new Error('登录已过期'))
+      // app === 'unknown' 时: 不清状态, 不跳转, 把错误原样抛回去,
+      // 让具体调用方决定怎么处理 (例如 .catch(silent) 或 ElMessage.error)。
+      return Promise.reject(new Error(
+        app === 'unknown' ? 'unknown_app_401' : '登录已过期'
+      ))
     }
     if (status === 429) {
       ElMessage.error(typeof msg === 'string' ? msg : '请求过于频繁')

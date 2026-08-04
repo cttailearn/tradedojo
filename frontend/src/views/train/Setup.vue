@@ -167,7 +167,7 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { trainApi, stocksApi } from '@/api/modules'
+import { trainApi } from '@/api/modules'
 import { calcSessionCost } from '@/utils/trainFee'
 
 const router = useRouter()
@@ -267,7 +267,10 @@ async function loadOptions() {
   loadingOptions.value = true
   try {
     const [ind, w] = await Promise.all([
-      stocksApi.industries().catch(() => ({ items: [] })),
+      // 2026-08-04 P0-3 修复: 改用 train 端 industries 端点。
+      // 旧版 stocksApi.industries() 强制 require_admin, 训练用户没 admin token
+      // → 401 → 前端 axios 拦截器误判为 train auth 失败 → 用户被踢回登录页。
+      trainApi.industries().catch(() => ({ items: [] })),
       trainApi.wallet().catch(() => ({ balance: 0 })),
     ])
     options.industries = ind?.items?.map((i) => i.industry) || []
