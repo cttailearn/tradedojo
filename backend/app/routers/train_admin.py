@@ -11,11 +11,11 @@ import json
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from app.config import settings
 from app.deps import require_admin
-from app.deps_train import _hash_pw
+from app.routers.train_auth import hash_password
 from app.rate_limit import limiter
 from app.models import (
     AdminActionLogResponse,
@@ -176,6 +176,7 @@ def set_user_active(
     user_id: int,
     payload: SetUserActiveRequest,
     request: Request,
+    response: Response,
     user: dict = Depends(require_admin),
 ):
     row = query_one(
@@ -232,6 +233,7 @@ def reset_user_password(
     user_id: int,
     payload: ResetUserPasswordRequest,
     request: Request,
+    response: Response,
     user: dict = Depends(require_admin),
 ):
     """管理员重置密码(用户登录被踢,下次登录要重新登录)"""
@@ -241,10 +243,9 @@ def reset_user_password(
     )
     if not row:
         raise HTTPException(404, "用户不存在")
-    h = _hash_pw(payload.new_password)
     execute(
         "UPDATE training_user SET password_hash = ?, salt = '' WHERE id = ?",
-        (h, user_id),
+        (hash_password(payload.new_password), user_id),
     )
     # 强制下线该用户的所有 session (train_token)
     try:
@@ -283,6 +284,7 @@ def adjust_wallet(
     user_id: int,
     payload: AdjustWalletRequest,
     request: Request,
+    response: Response,
     user: dict = Depends(require_admin),
 ):
     """加扣余额:
@@ -468,6 +470,7 @@ def list_redeem_codes(
 def create_redeem_codes(
     payload: RedeemCodeCreateRequest,
     request: Request,
+    response: Response,
     user: dict = Depends(require_admin),
 ):
     """生成兑换码"""
@@ -508,6 +511,7 @@ def revoke_redeem_code(
     code: str,
     payload: RevokeRedeemCodeRequest,
     request: Request,
+    response: Response,
     user: dict = Depends(require_admin),
 ):
     """作废未使用的兑换码(已使用的不允许作废 —— 退钱走 adjust_wallet)"""
