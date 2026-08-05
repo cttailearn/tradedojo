@@ -296,10 +296,7 @@ class ParallelKlineUpdater:
             ) as pool:
                 futures = {}
                 for code, name, list_date in todo:
-                    per_start = (
-                        _resolve_start(list_date, days_back)
-                        if since_list_date else start
-                    )
+                    per_start = _resolve_start(list_date, days_back)
                     futures[pool.submit(
                         self._worker_task, code, name, per_start, end, adjust
                     )] = (code, name)
