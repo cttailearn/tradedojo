@@ -126,19 +126,22 @@ def reset_checkpoint(req: ResetCheckpointRequest):
     """
     重置指定任务的 checkpoint(下次更新将重新拉取全部数据)。
     主要用于 stock_list / index_daily / kline_daily。
+
+    修复(2026-08-05): 之前 DELETE FROM checkpoint 引用不存在的表(PG 实际表名是
+    checkpoint_<task>), 异常被吞导致"重置成功"但实际未清; 且 _load() 优先恢复
+    JSON 快照, 不删快照文件断点永远存在。现统一走 CheckpointManager.reset()
+    (删除正确表 + 本地 JSON 快照), 重置真正生效。
     """
     try:
         from updater.checkpoint import CheckpointManager
-        from db.database import get_conn
 
         task_type, _ = resolve_task(req.task)
-        # 删除该任务类型的所有 checkpoint 行
-        with get_conn() as conn:
-            cur = conn.execute(
-                "DELETE FROM checkpoint WHERE task_type = ?",
-                (task_type.value,),
-            )
-            deleted = cur.rowcount
+        cp = CheckpointManager(task_type.value)
+        cp.reset()
+        return {
+            "task": task_type.value,
+            "deleted_rows": 0,
+            "reset": True,
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"task": task_type.value, "deleted_rows": deleted}
