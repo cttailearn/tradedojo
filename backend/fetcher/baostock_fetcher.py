@@ -16,6 +16,7 @@ API 速查:
 import logging
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import pandas as pd
@@ -50,6 +51,14 @@ _BS_LOCK = threading.RLock()
 _BS_LAST_QUERY_TS = 0.0
 _BS_MIN_INTERVAL = 0.12  # 两次请求最小间隔(秒), 规避服务端限流
 
+# 单次 baostock 查询/读取的超时(秒)。
+# baostock 是同步阻塞客户端, 网络异常时 recv 可能永久挂起;
+# 通过"独立线程执行 + 限时等待"兜底, 避免整个任务被卡死。
+_BS_QUERY_TIMEOUT = 30.0
+
+# 供超时执行复用的线程池(单工作线程, 配合 _BS_LOCK 天然串行)
+_BS_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="BaostockIO")
+
 
 def _is_network_error(msg: str) -> bool:
     """判断 baostock 错误是否为网络/连接类(需重置会话重试)"""
@@ -59,7 +68,15 @@ def _is_network_error(msg: str) -> bool:
     return any(k in m for k in (
         "网络", "network", "连接", "connection",
         "超时", "timeout", "recv", "socket", "断开", "reset",
+        # 2026-08-05: baostock 海外访问常见 zlib 解压错误(数据包损坏)
+        "decompress", "解压", "接收数据异常", "invalid distance", "error -3",
     ))
+
+
+def _iter_rows(rs):
+    """安全遍历 baostock ResultData(zlib 解压错误会在此抛出, 由 read_fn 捕获)"""
+    while rs.next():
+        yield rs.get_row_data()
 
 
 # 复权方式映射
@@ -128,11 +145,15 @@ class BaostockFetcher(BaseFetcher):
             _BS_LOGGED_IN = False
             self._logged_in = False
 
-    def _run_query(self, query_fn):
-        """执行 baostock 查询: 串行化 + 限流 + 失败自动重登录重试。
+    def _run_query(self, query_fn, read_fn=None, timeout: float = _BS_QUERY_TIMEOUT):
+        """执行 baostock 查询: 串行化 + 限流 + 超时兜底 + 失败自动重登录重试。
 
         query_fn: 无参 callable, 返回 baostock ResultData。
-        返回: ResultData(成功或业务错误); 重试耗尽仍失败返回 None。
+        read_fn:  可选; 在查询成功后于同一执行线程内消费 ResultData
+                  (rs.next()/get_row_data() 循环), 返回业务结果。
+                  baostock 的 zlib 解压错误发生在读取阶段, 必须纳入超时保护。
+        返回: read_fn 结果; 未提供 read_fn 时返回 ResultData(或业务错误);
+              重试耗尽仍失败返回 None。
         """
         global _BS_LAST_QUERY_TS
         last_err = ""
@@ -149,29 +170,64 @@ class BaostockFetcher(BaseFetcher):
                     need_retry = True
                 else:
                     try:
-                        rs = query_fn()
+                        # 独立线程执行, 主线程限时等待:
+                        # baostock 同步客户端在 socket 异常时可能永久阻塞,
+                        # 超时后重置会话, 避免全局锁被挂起线程长期占用。
+                        fut = _BS_EXECUTOR.submit(self._query_with_read, query_fn, read_fn)
+                        result = fut.result(timeout=timeout)
                     except Exception as e:
-                        last_err = f"异常: {e}"
-                        logger.warning(f"[Baostock] 查询异常(第 {attempt+1} 次): {e}")
+                        last_err = f"超时/异常: {e}"
+                        logger.warning(
+                            f"[Baostock] 查询超时或异常(第 {attempt+1} 次, "
+                            f"{timeout:.0f}s): {e}; 重置会话后重试"
+                        )
                         self._reset_login()
                         need_retry = True
                     else:
                         _BS_LAST_QUERY_TS = time.monotonic()
-                        if rs.error_code != "0":
-                            last_err = rs.error_msg
-                            if _is_network_error(rs.error_msg):
+                        if isinstance(result, Exception):
+                            # query/read 阶段抛出的异常(含 zlib 解压错误)
+                            last_err = f"异常: {result}"
+                            logger.warning(
+                                f"[Baostock] 查询/读取异常(第 {attempt+1} 次): {result}; "
+                                f"重置会话后重试"
+                            )
+                            self._reset_login()
+                            need_retry = True
+                        elif result is not None and getattr(result, "error_code", "0") != "0":
+                            last_err = result.error_msg
+                            if _is_network_error(result.error_msg):
                                 logger.warning(
                                     f"[Baostock] 网络错误(第 {attempt+1} 次): "
-                                    f"{rs.error_msg}, 重置会话后重试"
+                                    f"{result.error_msg}, 重置会话后重试"
                                 )
                                 self._reset_login()
                                 need_retry = True
                             # 业务错误 -> 直接返回, 不重试
+                        else:
+                            return result
             if not need_retry:
                 return rs
             time.sleep(FetchConfig.RETRY_BACKOFF * (attempt + 1))
         logger.error(f"[Baostock] 查询重试 {FetchConfig.RETRY_TIMES} 次后仍失败: {last_err}")
         return None
+
+    @staticmethod
+    def _query_with_read(query_fn, read_fn):
+        """在 baostock 执行线程内运行: query_fn 后可选 read_fn 消费结果。
+
+        read_fn 抛出的任何异常(zlib 解压错误等)原样返回, 由 _run_query 统一重试。
+        """
+        try:
+            rs = query_fn()
+        except Exception as e:
+            return e
+        if read_fn is not None:
+            try:
+                return read_fn(rs)
+            except Exception as e:
+                return e
+        return rs
 
     def is_available(self) -> bool:
         return _HAS_BAOSTOCK
@@ -183,13 +239,21 @@ class BaostockFetcher(BaseFetcher):
         with _BS_LOCK:
             if not self._ensure_login():
                 return pd.DataFrame()
-            rs = bs.query_stock_basic()
-            if rs.error_code != "0":
-                logger.error(f"[Baostock] query_stock_basic 失败: {rs.error_msg}")
+
+            def _read(rs):
+                return list(_iter_rows(rs))
+
+            result = self._run_query(
+                lambda: bs.query_stock_basic(),
+                read_fn=_read,
+            )
+            if result is None or isinstance(result, Exception):
+                logger.warning(f"[Baostock] query_stock_basic 失败: {result}")
                 return pd.DataFrame()
-            raw_rows = []
-            while rs.next():
-                raw_rows.append(rs.get_row_data())
+            if getattr(result, "error_code", "0") != "0":
+                logger.error(f"[Baostock] query_stock_basic 失败: {result.error_msg}")
+                return pd.DataFrame()
+            raw_rows = result
 
         rows = []
         for row in raw_rows:
@@ -251,47 +315,55 @@ class BaostockFetcher(BaseFetcher):
         start = start_date
         end = end_date
 
-        rs = self._run_query(lambda: bs.query_history_k_data_plus(
-            bs_code,
-            # baostock 没有 change 字段,用 close - preclose 现场算
-            "date,open,high,low,close,preclose,volume,amount,turn,tradestatus,pctChg",
-            start_date=start, end_date=end,
-            frequency="d", adjustflag=adjustflag,
-        ))
-        if rs is None:
+        def _read(rs):
+            rows = []
+            while rs.next():
+                r = rs.get_row_data()
+                date, o, h, l, c, pc, vol, amt, tr, status, pct = r[:11]
+                if status not in ("1",):  # 只取交易日
+                    continue
+                close_f = float(c) if c else None
+                pre_close_f = float(pc) if pc else None
+                change_amt = (
+                    (close_f - pre_close_f) if (close_f is not None and pre_close_f is not None) else None
+                )
+                rows.append({
+                    "code": code,
+                    "trade_date": date,
+                    "open": float(o) if o else None,
+                    "high": float(h) if h else None,
+                    "low": float(l) if l else None,
+                    "close": close_f,
+                    "pre_close": pre_close_f,
+                    "change_amount": change_amt,
+                    "pct_change": float(pct) if pct else None,
+                    "volume": int(float(vol)) if vol else 0,
+                    "amount": float(amt) if amt else None,
+                    "turnover_rate": float(tr) if tr else None,
+                    "adjust_type": adjust if adjust else "none",
+                })
+            return pd.DataFrame(rows)
+
+        result = self._run_query(
+            lambda: bs.query_history_k_data_plus(
+                bs_code,
+                # baostock 没有 change 字段,用 close - preclose 现场算
+                "date,open,high,low,close,preclose,volume,amount,turn,tradestatus,pctChg",
+                start_date=start, end_date=end,
+                frequency="d", adjustflag=adjustflag,
+            ),
+            read_fn=_read,
+        )
+        if result is None:
             logger.warning(f"[Baostock] {bs_code} 日K 获取失败(重试耗尽)")
             return pd.DataFrame()
-        if rs.error_code != "0":
-            logger.warning(f"[Baostock] {bs_code} 日K 失败: {rs.error_msg}")
+        if isinstance(result, Exception):
+            logger.warning(f"[Baostock] {bs_code} 日K 读取失败: {result}")
             return pd.DataFrame()
-
-        rows = []
-        while rs.next():
-            r = rs.get_row_data()
-            date, o, h, l, c, pc, vol, amt, tr, status, pct = r[:11]
-            if status not in ("1",):  # 只取交易日
-                continue
-            close_f = float(c) if c else None
-            pre_close_f = float(pc) if pc else None
-            change_amt = (
-                (close_f - pre_close_f) if (close_f is not None and pre_close_f is not None) else None
-            )
-            rows.append({
-                "code": code,
-                "trade_date": date,
-                "open": float(o) if o else None,
-                "high": float(h) if h else None,
-                "low": float(l) if l else None,
-                "close": close_f,
-                "pre_close": pre_close_f,
-                "change_amount": change_amt,
-                "pct_change": float(pct) if pct else None,
-                "volume": int(float(vol)) if vol else 0,
-                "amount": float(amt) if amt else None,
-                "turnover_rate": float(tr) if tr else None,
-                "adjust_type": adjust if adjust else "none",
-            })
-        return pd.DataFrame(rows)
+        if getattr(result, "error_code", "0") != "0":
+            logger.warning(f"[Baostock] {bs_code} 日K 失败: {result.error_msg}")
+            return pd.DataFrame()
+        return result
 
     # ---------- 3. 指数 ----------
     def get_index_daily(self, code: str = "sh000001") -> pd.DataFrame:
@@ -301,32 +373,37 @@ class BaostockFetcher(BaseFetcher):
         if "." not in bs_code:
             bs_code = bs_code[:2] + "." + bs_code[2:]
 
-        rs = self._run_query(lambda: bs.query_history_k_data_plus(
-            bs_code,
-            "date,open,high,low,close,volume,amount",
-            start_date="2020-01-01", end_date="2099-12-31",
-            frequency="d", adjustflag="3",
-        ))
-        if rs is None:
-            return pd.DataFrame()
-        if rs.error_code != "0":
-            return pd.DataFrame()
+        def _read(rs):
+            rows = []
+            while rs.next():
+                r = rs.get_row_data()
+                date, o, h, l, c, vol, amt = r[:7]
+                rows.append({
+                    "code": code,
+                    "trade_date": date,
+                    "open": float(o) if o else None,
+                    "high": float(h) if h else None,
+                    "low": float(l) if l else None,
+                    "close": float(c) if c else None,
+                    "volume": int(float(vol)) if vol else 0,
+                    "amount": float(amt) if amt else None,
+                })
+            return pd.DataFrame(rows)
 
-        rows = []
-        while rs.next():
-            r = rs.get_row_data()
-            date, o, h, l, c, vol, amt = r[:7]
-            rows.append({
-                "code": code,
-                "trade_date": date,
-                "open": float(o) if o else None,
-                "high": float(h) if h else None,
-                "low": float(l) if l else None,
-                "close": float(c) if c else None,
-                "volume": int(float(vol)) if vol else 0,
-                "amount": float(amt) if amt else None,
-            })
-        return pd.DataFrame(rows)
+        result = self._run_query(
+            lambda: bs.query_history_k_data_plus(
+                bs_code,
+                "date,open,high,low,close,volume,amount",
+                start_date="2020-01-01", end_date="2099-12-31",
+                frequency="d", adjustflag="3",
+            ),
+            read_fn=_read,
+        )
+        if result is None or isinstance(result, Exception):
+            return pd.DataFrame()
+        if getattr(result, "error_code", "0") != "0":
+            return pd.DataFrame()
+        return result
 
     # ---------- 4. 个股信息(含行业/上市日期) ----------
     def get_stock_profile(self, code: str) -> Optional[dict]:
@@ -346,7 +423,9 @@ class BaostockFetcher(BaseFetcher):
 
         # 1) 基础信息
         rs = self._run_query(lambda: bs.query_stock_basic(code=bs_code))
-        if rs is None or rs.error_code != "0":
+        if rs is None or isinstance(rs, Exception):
+            return None
+        if rs.error_code != "0":
             return None
         if not rs.next():
             return None
@@ -355,11 +434,14 @@ class BaostockFetcher(BaseFetcher):
 
         # 2) 行业(证监会分类,baostock 提供)
         industry = ""
-        rs_ind = self._run_query(lambda: bs.query_stock_industry(code=bs_code))
-        if rs_ind is not None and rs_ind.error_code == "0":
-            # 字段: updateDate, code, code_name, industry, industryClassification
-            while rs_ind.next():
-                ind_row = rs_ind.get_row_data()
+        rs_ind = self._run_query(
+            lambda: bs.query_stock_industry(code=bs_code),
+            read_fn=lambda rsi: [
+                row for row in _iter_rows(rsi)
+            ] if rsi.error_code == "0" else [],
+        )
+        if rs_ind and not isinstance(rs_ind, Exception):
+            for ind_row in rs_ind:
                 if len(ind_row) >= 4 and ind_row[1] == bs_code:
                     industry = ind_row[3]
                     break
