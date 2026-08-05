@@ -133,15 +133,31 @@ def reset_checkpoint(req: ResetCheckpointRequest):
     (删除正确表 + 本地 JSON 快照), 重置真正生效。
     """
     try:
-        from updater.checkpoint import CheckpointManager
+        from updater.checkpoint import CheckpointManager, CHECKPOINT_DIR
 
         task_type, _ = resolve_task(req.task)
-        cp = CheckpointManager(task_type.value)
-        cp.reset()
+        # 兼容任务命名: 新命名 task_type.value(kline_daily)与旧命名
+        # (parallel_updater 内部用 "daily_kline" 建表/快照, 2026-08-05 发现命名不一致
+        #  导致 reset 删错表/文件, 断点从未真正清除)
+        names = [task_type.value]
+        if task_type.value == "kline_daily":
+            names.append("daily_kline")
+        for name in names:
+            try:
+                CheckpointManager(name).reset()
+            except Exception as e:
+                logger.warning(f"[reset-checkpoint] {name} 重置失败: {e}")
+            # 兜底: 快照文件可能残留
+            for f in (CHECKPOINT_DIR / f"{name}.json", CHECKPOINT_DIR / f"{name}.json.tmp"):
+                try:
+                    if f.exists():
+                        f.unlink()
+                except Exception:
+                    pass
         return {
             "task": task_type.value,
-            "deleted_rows": 0,
             "reset": True,
+            "cleared": names,
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
