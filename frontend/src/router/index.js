@@ -71,6 +71,14 @@ const router = createRouter({
   routes,
 })
 
+// 2026-08-05: 双端视觉作用域 — 每次导航同步 html[data-app] 并应用该端主题模式
+router.afterEach((to) => {
+  const app = to.meta?.app || 'train'
+  document.documentElement.dataset.app = app
+  const theme = useThemeStore()
+  theme.apply()
+})
+
 // 路由守卫
 router.beforeEach((to) => {
   const app = to.meta?.app

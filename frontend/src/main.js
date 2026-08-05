@@ -17,17 +17,22 @@ import './styles/main.css'
 
 const app = createApp(App)
 
-// 2026-07-31 P2-1: 暗色模式初始化
-const savedTheme = localStorage.getItem('app_theme') || 'light'
-if (savedTheme === 'dark') {
-  document.documentElement.classList.add('dark')
-}
+const pinia = createPinia()
+
+// 2026-08-05: 启动时按 hash 判定所在端, 设置视觉作用域并应用该端主题
+const initialApp = location.hash.startsWith('#/admin') ? 'admin' : 'train'
+document.documentElement.dataset.app = initialApp
+
+app.use(pinia)
+// 应用 per-app 主题(依赖 pinia 已安装)
+import('./stores/theme').then(({ useThemeStore }) => {
+  useThemeStore(pinia).apply()
+})
 
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component)
 }
 
-app.use(createPinia())
 app.use(router)
 app.use(ElementPlus)
 app.mount('#app')
