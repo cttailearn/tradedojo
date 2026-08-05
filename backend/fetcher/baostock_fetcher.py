@@ -241,7 +241,9 @@ class BaostockFetcher(BaseFetcher):
                 return pd.DataFrame()
 
             def _read(rs):
-                return list(_iter_rows(rs))
+                rows = list(_iter_rows(rs))
+                # 网络损坏时可能返回残缺行, 过滤列数不足的
+                return [r for r in rows if r is not None and len(r) >= 6]
 
             result = self._run_query(
                 lambda: bs.query_stock_basic(),
@@ -319,6 +321,9 @@ class BaostockFetcher(BaseFetcher):
             rows = []
             while rs.next():
                 r = rs.get_row_data()
+                # 网络损坏时 baostock 可能返回列数不足的残缺行, 防御性跳过
+                if r is None or len(r) < 11:
+                    raise ValueError(f"残缺行(列数 {0 if r is None else len(r)} < 11)")
                 date, o, h, l, c, pc, vol, amt, tr, status, pct = r[:11]
                 if status not in ("1",):  # 只取交易日
                     continue
@@ -377,6 +382,8 @@ class BaostockFetcher(BaseFetcher):
             rows = []
             while rs.next():
                 r = rs.get_row_data()
+                if r is None or len(r) < 7:
+                    raise ValueError(f"残缺行(列数 {0 if r is None else len(r)} < 7)")
                 date, o, h, l, c, vol, amt = r[:7]
                 rows.append({
                     "code": code,
@@ -438,6 +445,7 @@ class BaostockFetcher(BaseFetcher):
             lambda: bs.query_stock_industry(code=bs_code),
             read_fn=lambda rsi: [
                 row for row in _iter_rows(rsi)
+                if row is not None and len(row) >= 4
             ] if rsi.error_code == "0" else [],
         )
         if rs_ind and not isinstance(rs_ind, Exception):
