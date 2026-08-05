@@ -245,6 +245,15 @@ class ParallelKlineUpdater:
                 if only_active:
                     sql += " WHERE is_active = 1"
                 all_stocks = conn.execute(sql).fetchall()
+
+        # 长驻进程(uvicorn)中 baostock 的 socket 可能已陈旧:
+        # 强制重置会话, 让每轮任务从全新连接开始(2026-08-05)
+        try:
+            reset = getattr(self.fetcher, "_reset_login", None)
+            if callable(reset):
+                reset()
+        except Exception:
+            pass
         logger.info(
             f"[目标] {len(all_stocks)} 只股票,复权={adjust},回溯 {days_back} 天"
             f"{' (限定 codes)' if codes else ''}"

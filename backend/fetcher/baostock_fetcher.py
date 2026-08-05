@@ -79,6 +79,20 @@ def _iter_rows(rs):
         yield rs.get_row_data()
 
 
+def _result_empty(result) -> bool:
+    """判断 read_fn 结果为"空"(可能因 baostock 连接异常静默返回)。"""
+    try:
+        if result is None:
+            return True
+        if hasattr(result, "__len__"):
+            return len(result) == 0
+        if hasattr(result, "empty"):  # DataFrame
+            return bool(result.empty)
+    except Exception:
+        pass
+    return False
+
+
 # 复权方式映射
 _ADJUST_FLAG = {
     "qfq": "2",   # 前复权
@@ -205,7 +219,20 @@ class BaostockFetcher(BaseFetcher):
                                 need_retry = True
                             # 业务错误 -> 直接返回, 不重试
                         else:
-                            return result
+                            # read_fn 结果为空时, 视为网络异常静默(baostock send_msg
+                            # 失败只打印并返回 None, rs.next() 返回 False, 不抛异常)。
+                            # 仅在首次尝试时重试一次(避免把停牌/真无数据当异常反复重试)
+                            if (read_fn is not None and attempt == 0
+                                    and _result_empty(result)):
+                                last_err = "空结果(疑似连接异常静默)"
+                                logger.warning(
+                                    f"[Baostock] 首次查询空结果: 疑似连接异常, "
+                                    f"重置会话后重试"
+                                )
+                                self._reset_login()
+                                need_retry = True
+                            else:
+                                return result
             if not need_retry:
                 return rs
             time.sleep(FetchConfig.RETRY_BACKOFF * (attempt + 1))
