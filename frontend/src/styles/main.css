@@ -254,7 +254,7 @@ body {
 .stat-icon.orange { background: var(--color-warning); }
 .stat-icon.red    { background: var(--color-danger); }
 .stat-icon.purple { background: var(--color-info); }
-.stat-icon.teal   { background: #14b8a6; }
+.stat-icon.teal   { background: var(--color-teal); }
 
 .stat-info { min-width: 0; }
 .stat-info .stat-label {
@@ -387,22 +387,22 @@ body {
   flex-wrap: wrap; margin-bottom: var(--space-lg);
 }
 
-/* ═══════ 暗色模式细节微调 (2026-08-04) ═══════ */
-/* 暗色下骨架屏分层灰度: 三个渐变段用不同暗色, 使 shimmer 可见 */
+/* ═══════ 暗色模式细节微调 (2026-08-04, 2026-08-05 token 化) ═══════ */
+/* 暗色下骨架屏分层灰度: 三个渐变段用 token 层次, 使 shimmer 可见且双端暗色自动适配 */
 html.dark .skeleton {
   background: linear-gradient(90deg,
-    #16233b 25%,
-    #20304d 50%,
-    #16233b 75%);
+    var(--bg-muted) 25%,
+    var(--bg-hover) 50%,
+    var(--bg-muted) 75%);
   background-size: 200% 100%;
 }
-/* 暗色下统计卡 hover 边框用暗色系蓝调, 避免发白 */
+/* 暗色下统计卡 hover 边框用暗色系, 避免发白 */
 html.dark .stat-card:hover {
   border-color: var(--color-primary-dark);
 }
 /* 暗色下任务日志背景与页面融为一体(维持金融终端感) */
 html.dark .task-log {
-  background: #0a1120;
+  background: var(--bg-sidebar);
   border: 1px solid var(--border-color);
 }
 /* 暗色下 metric-item 左条与 hover 层次 */

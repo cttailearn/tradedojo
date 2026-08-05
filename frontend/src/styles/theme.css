@@ -1,41 +1,54 @@
 /* ============================================================
- * Element Plus 深度主题定制
- * 基于设计系统变量覆盖 EP 默认样式
+ * Element Plus 深度主题定制 (2026-08-05 token 化重构)
+ *
+ * 所有 EP 色阶均由 color-mix() 从设计 token 推导, 而非硬编码:
+ *   浅色作用域 (:root / html[data-app="train"])  → 混合目标 = 白
+ *   暗色作用域 (html.dark, 含 train 墨青夜)       → 混合目标 = 页面背景
+ * 这样四种作用域 (admin 浅/暗, train 浅/暗) 自动适配, 不会串色。
+ * 注意: EP dark/css-vars.css 只提供默认暗色, 此处以本项目 token 覆盖之。
  * ============================================================ */
 
 :root {
-  /* ───── EP 色彩变量映射 ───── */
+  /* ───── EP 色彩变量映射 (由设计 token 推导) ───── */
   --el-color-primary:              var(--color-primary);
-  --el-color-primary-light-3:      var(--color-primary-light);
-  --el-color-primary-light-5:      #60a5fa;
-  --el-color-primary-light-7:      #93bbfd;
-  --el-color-primary-light-8:      #bfdbfe;
-  --el-color-primary-light-9:      var(--color-primary-lighter);
-  --el-color-primary-dark-2:       var(--color-primary-dark);
+  --el-color-primary-light-3:      color-mix(in srgb, var(--color-primary) 70%, #ffffff);
+  --el-color-primary-light-5:      color-mix(in srgb, var(--color-primary) 50%, #ffffff);
+  --el-color-primary-light-7:      color-mix(in srgb, var(--color-primary) 30%, #ffffff);
+  --el-color-primary-light-8:      color-mix(in srgb, var(--color-primary) 20%, #ffffff);
+  --el-color-primary-light-9:      color-mix(in srgb, var(--color-primary) 10%, #ffffff);
+  --el-color-primary-dark-2:       color-mix(in srgb, var(--color-primary) 80%, #000000);
 
   --el-color-success:              var(--color-success);
-  --el-color-success-light-3:      #34d399;
-  --el-color-success-light-5:      #6ee7b7;
-  --el-color-success-light-7:      #a7f3d0;
-  --el-color-success-light-9:      var(--color-success-light);
+  --el-color-success-light-3:      color-mix(in srgb, var(--color-success) 70%, #ffffff);
+  --el-color-success-light-5:      color-mix(in srgb, var(--color-success) 50%, #ffffff);
+  --el-color-success-light-7:      color-mix(in srgb, var(--color-success) 30%, #ffffff);
+  --el-color-success-light-8:      color-mix(in srgb, var(--color-success) 20%, #ffffff);
+  --el-color-success-light-9:      color-mix(in srgb, var(--color-success) 10%, #ffffff);
+  --el-color-success-dark-2:       color-mix(in srgb, var(--color-success) 80%, #000000);
 
   --el-color-warning:              var(--color-warning);
-  --el-color-warning-light-3:      #fbbf24;
-  --el-color-warning-light-5:      #fcd34d;
-  --el-color-warning-light-7:      #fde68a;
-  --el-color-warning-light-9:      var(--color-warning-light);
+  --el-color-warning-light-3:      color-mix(in srgb, var(--color-warning) 70%, #ffffff);
+  --el-color-warning-light-5:      color-mix(in srgb, var(--color-warning) 50%, #ffffff);
+  --el-color-warning-light-7:      color-mix(in srgb, var(--color-warning) 30%, #ffffff);
+  --el-color-warning-light-8:      color-mix(in srgb, var(--color-warning) 20%, #ffffff);
+  --el-color-warning-light-9:      color-mix(in srgb, var(--color-warning) 10%, #ffffff);
+  --el-color-warning-dark-2:       color-mix(in srgb, var(--color-warning) 80%, #000000);
 
   --el-color-danger:               var(--color-danger);
-  --el-color-danger-light-3:       #f87171;
-  --el-color-danger-light-5:       #fca5a5;
-  --el-color-danger-light-7:       #fecaca;
-  --el-color-danger-light-9:       var(--color-danger-light);
+  --el-color-danger-light-3:       color-mix(in srgb, var(--color-danger) 70%, #ffffff);
+  --el-color-danger-light-5:       color-mix(in srgb, var(--color-danger) 50%, #ffffff);
+  --el-color-danger-light-7:       color-mix(in srgb, var(--color-danger) 30%, #ffffff);
+  --el-color-danger-light-8:       color-mix(in srgb, var(--color-danger) 20%, #ffffff);
+  --el-color-danger-light-9:       color-mix(in srgb, var(--color-danger) 10%, #ffffff);
+  --el-color-danger-dark-2:        color-mix(in srgb, var(--color-danger) 80%, #000000);
 
   --el-color-info:                 var(--color-info);
-  --el-color-info-light-3:         #818cf8;
-  --el-color-info-light-5:         #a5b4fc;
-  --el-color-info-light-7:         #c7d2fe;
-  --el-color-info-light-9:         var(--color-info-light);
+  --el-color-info-light-3:         color-mix(in srgb, var(--color-info) 70%, #ffffff);
+  --el-color-info-light-5:         color-mix(in srgb, var(--color-info) 50%, #ffffff);
+  --el-color-info-light-7:         color-mix(in srgb, var(--color-info) 30%, #ffffff);
+  --el-color-info-light-8:         color-mix(in srgb, var(--color-info) 20%, #ffffff);
+  --el-color-info-light-9:         color-mix(in srgb, var(--color-info) 10%, #ffffff);
+  --el-color-info-dark-2:          color-mix(in srgb, var(--color-info) 80%, #000000);
 
   /* ───── EP 通用变量 ───── */
   --el-font-family:                var(--font-sans);
@@ -64,8 +77,12 @@
   --el-bg-color-page:              var(--bg-page);
   --el-bg-color-overlay:           var(--bg-card);
   --el-fill-color-blank:           var(--bg-card);
-  --el-fill-color-light:           var(--bg-hover);
+  --el-fill-color:                 var(--bg-hover);
+  --el-fill-color-light:           var(--bg-muted);
   --el-fill-color-lighter:         var(--bg-muted);
+  --el-fill-color-extra-light:     var(--bg-card);
+  --el-fill-color-dark:            var(--border-color);
+  --el-fill-color-darker:          var(--border-color-dark);
 
   --el-box-shadow-light:           var(--shadow-sm);
   --el-box-shadow:                 var(--shadow-md);
@@ -139,56 +156,73 @@
   --el-slider-main-bg-color:       var(--color-primary);
 }
 
-/* ============================================================
- * 暗色模式 EP 变量覆盖 (2026-08-04)
- * EP dark/css-vars.css 已处理大部分 --el-* 变量,
- * 此处修正 :root 中硬编码的浅色 light-N 家族, 防止暗色下发白
- * ============================================================ */
+/* ════════════════════════════════════════════════════════════
+ * 暗色作用域 (admin dark / train 墨青夜 共用)
+ * 混合目标 = 页面背景, 色阶在暗色下自然变深不发白
+ * 由 html[data-app] + .dark 上的 token 值自动适配两端的暗色
+ * ════════════════════════════════════════════════════════════ */
 html.dark {
-  /* Primary light-N: 深蓝渐变族 */
-  --el-color-primary-light-3:      #3b82f6;
-  --el-color-primary-light-5:      #2563eb;
-  --el-color-primary-light-7:      #1e3a8a;
-  --el-color-primary-light-8:      #172554;
-  --el-color-primary-light-9:      #0f1e3d;
-  --el-color-primary-dark-2:       #93c5fd;
+  --el-color-primary-light-3:      color-mix(in srgb, var(--color-primary) 65%, var(--bg-page));
+  --el-color-primary-light-5:      color-mix(in srgb, var(--color-primary) 45%, var(--bg-page));
+  --el-color-primary-light-7:      color-mix(in srgb, var(--color-primary) 28%, var(--bg-page));
+  --el-color-primary-light-8:      color-mix(in srgb, var(--color-primary) 20%, var(--bg-page));
+  --el-color-primary-light-9:      color-mix(in srgb, var(--color-primary) 10%, var(--bg-page));
+  --el-color-primary-dark-2:       color-mix(in srgb, var(--color-primary) 78%, #000000);
 
-  /* Success */
-  --el-color-success-light-3:      #10b981;
-  --el-color-success-light-5:      #059669;
-  --el-color-success-light-7:      #065f46;
-  --el-color-success-light-8:      #064e3b;
-  --el-color-success-light-9:      #04302c;
+  --el-color-success-light-3:      color-mix(in srgb, var(--color-success) 65%, var(--bg-page));
+  --el-color-success-light-5:      color-mix(in srgb, var(--color-success) 45%, var(--bg-page));
+  --el-color-success-light-7:      color-mix(in srgb, var(--color-success) 28%, var(--bg-page));
+  --el-color-success-light-8:      color-mix(in srgb, var(--color-success) 20%, var(--bg-page));
+  --el-color-success-light-9:      color-mix(in srgb, var(--color-success) 10%, var(--bg-page));
+  --el-color-success-dark-2:       color-mix(in srgb, var(--color-success) 78%, #000000);
 
-  /* Warning */
-  --el-color-warning-light-3:      #f59e0b;
-  --el-color-warning-light-5:      #d97706;
-  --el-color-warning-light-7:      #92400e;
-  --el-color-warning-light-8:      #78350f;
-  --el-color-warning-light-9:      #451a03;
+  --el-color-warning-light-3:      color-mix(in srgb, var(--color-warning) 65%, var(--bg-page));
+  --el-color-warning-light-5:      color-mix(in srgb, var(--color-warning) 45%, var(--bg-page));
+  --el-color-warning-light-7:      color-mix(in srgb, var(--color-warning) 28%, var(--bg-page));
+  --el-color-warning-light-8:      color-mix(in srgb, var(--color-warning) 20%, var(--bg-page));
+  --el-color-warning-light-9:      color-mix(in srgb, var(--color-warning) 10%, var(--bg-page));
+  --el-color-warning-dark-2:       color-mix(in srgb, var(--color-warning) 78%, #000000);
 
-  /* Danger */
-  --el-color-danger-light-3:       #ef4444;
-  --el-color-danger-light-5:       #dc2626;
-  --el-color-danger-light-7:       #991b1b;
-  --el-color-danger-light-8:       #7f1d1d;
-  --el-color-danger-light-9:       #450a0a;
+  --el-color-danger-light-3:       color-mix(in srgb, var(--color-danger) 65%, var(--bg-page));
+  --el-color-danger-light-5:       color-mix(in srgb, var(--color-danger) 45%, var(--bg-page));
+  --el-color-danger-light-7:       color-mix(in srgb, var(--color-danger) 28%, var(--bg-page));
+  --el-color-danger-light-8:       color-mix(in srgb, var(--color-danger) 20%, var(--bg-page));
+  --el-color-danger-light-9:       color-mix(in srgb, var(--color-danger) 10%, var(--bg-page));
+  --el-color-danger-dark-2:        color-mix(in srgb, var(--color-danger) 78%, #000000);
 
-  /* Info */
-  --el-color-info-light-3:         #6366f1;
-  --el-color-info-light-5:         #4f46e5;
-  --el-color-info-light-7:         #3730a3;
-  --el-color-info-light-8:         #312e81;
-  --el-color-info-light-9:         #1e1b4b;
+  --el-color-info-light-3:         color-mix(in srgb, var(--color-info) 65%, var(--bg-page));
+  --el-color-info-light-5:         color-mix(in srgb, var(--color-info) 45%, var(--bg-page));
+  --el-color-info-light-7:         color-mix(in srgb, var(--color-info) 28%, var(--bg-page));
+  --el-color-info-light-8:         color-mix(in srgb, var(--color-info) 20%, var(--bg-page));
+  --el-color-info-light-9:         color-mix(in srgb, var(--color-info) 10%, var(--bg-page));
+  --el-color-info-dark-2:          color-mix(in srgb, var(--color-info) 78%, #000000);
 
-  /* 暗色下输入框/悬停填充对齐深蓝调 */
-  --el-fill-color:                 #16233b;
-  --el-fill-color-light:           #131f35;
-  --el-fill-color-lighter:         #111c30;
-  --el-fill-color-extra-light:     #0d1524;
-  --el-fill-color-dark:            #1e2b45;
-  --el-fill-color-darker:          #24334f;
+  /* 暗色下填充/覆盖层: 全部指向 token, 双端暗色自动适配 */
+  --el-bg-color-page:              var(--bg-page);
+  --el-bg-color:                   var(--bg-card);
+  --el-bg-color-overlay:           var(--bg-card);
+  --el-fill-color:                 var(--bg-hover);
+  --el-fill-color-light:           var(--bg-muted);
+  --el-fill-color-lighter:         var(--bg-muted);
+  --el-fill-color-extra-light:     var(--bg-card);
+  --el-fill-color-dark:            var(--border-color);
+  --el-fill-color-darker:          var(--border-color-dark);
+}
 
-  /* 弹层/覆盖层背景 */
-  --el-bg-color-overlay:           #0d1524;
+/* ───── 组件关键面强制 (表格/输入框/弹层在暗色下的落底, 双端自动适配) ───── */
+html.dark body { background: var(--bg-page); color: var(--text-primary); }
+html.dark .page-card {
+  background: var(--bg-card);
+  border-color: var(--border-color);
+}
+html.dark .el-table { background: var(--bg-card); }
+html.dark .el-table th.el-table__cell { background: var(--bg-muted) !important; }
+html.dark .el-table tr { background: var(--bg-card) !important; color: var(--text-primary); }
+html.dark .el-input__wrapper { background: var(--bg-card); }
+html.dark .el-button { border-color: var(--border-color); }
+html.dark .el-dialog, html.dark .el-drawer, html.dark .el-card { background: var(--bg-card); }
+html.dark .el-popper.is-light,
+html.dark .el-popper.is-light .el-popper__arrow::before {
+  background: var(--bg-card);
+  border-color: var(--border-color);
 }

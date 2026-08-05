@@ -1,15 +1,25 @@
 /* ============================================================
- * Tradedojo 设计系统 - CSS 自定义属性
- * 现代简约 · 浅色主题 · 专业金融风格
+ * TradeDojo 设计系统 - CSS 自定义属性
+ *
+ * 双端作用域 (2026-08-05):
+ *   :root                       → 管理端默认 (浅色终端纸感)
+ *   html.dark                   → 管理端 (深色金融终端, admin 默认暗色)
+ *   html[data-app="train"]      → 训练端道场 浅色 (暖白纸感 + 墨青)
+ *   html[data-app="train"].dark → 训练端道场 暗色 (墨青夜)
+ *
+ * 路由切换时由 router afterEach 设置 html[data-app] 属性。
  * ============================================================ */
 
+/* ════════════════════════════════════════════════════════════
+ * 管理端 · 浅色 (html[data-app] 未指定时的回退; admin 默认暗色)
+ * 风格: 浅色终端纸面 — 冷灰克制、高对比、无花哨渐变
+ * ════════════════════════════════════════════════════════════ */
 :root {
-  /* ───── 色彩体系 ───── */
-  /* 品牌色 */
-  --color-primary:        #2563eb;
-  --color-primary-light:  #3b82f6;
-  --color-primary-lighter:#dbeafe;
-  --color-primary-dark:   #1d4ed8;
+  /* 品牌色 — 信号蓝 (signal blue, 终端控制感) */
+  --color-primary:         #2563eb;
+  --color-primary-light:   #3b82f6;
+  --color-primary-lighter: #dbeafe;
+  --color-primary-dark:    #1d4ed8;
 
   /* 功能色 */
   --color-success: #10b981;
@@ -20,21 +30,22 @@
   --color-danger-light:  #fee2e2;
   --color-info:    #6366f1;
   --color-info-light:    #e0e7ff;
+  --color-teal:    #14b8a6;
 
-  /* 涨跌色 (A股红涨绿跌) */
+  /* A股红涨绿跌 */
   --color-up:      #ef4444;
   --color-up-bg:   #fef2f2;
   --color-down:    #10b981;
   --color-down-bg: #ecfdf5;
 
   /* 中性色 - 背景 */
-  --bg-page:    #f8f9fb;
+  --bg-page:    #f5f6f8;
   --bg-card:    #ffffff;
   --bg-sidebar: #ffffff;
   --bg-header:  #ffffff;
-  --bg-hover:   #f1f5f9;
-  --bg-active:  #eff6ff;
-  --bg-muted:   #f8fafc;
+  --bg-hover:   #eef2f7;
+  --bg-active:  #eef4ff;
+  --bg-muted:   #f6f8fa;
 
   /* 中性色 - 文字 */
   --text-primary:    #0f172a;
@@ -46,7 +57,7 @@
 
   /* 中性色 - 边框 */
   --border-color:       #e2e8f0;
-  --border-color-light: #f1f5f9;
+  --border-color-light: #f0f2f5;
   --border-color-dark:  #cbd5e1;
 
   /* ───── 字体系统 ───── */
@@ -86,18 +97,18 @@
   --space-4xl: 40px;
   --space-5xl: 48px;
 
-  /* ───── 阴影系统 ───── */
+  /* ───── 阴影系统 (终端纸感: 细、浅、少) ───── */
   --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
   --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06);
   --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.06);
   --shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.08);
   --shadow-xl: 0 12px 36px rgba(15, 23, 42, 0.10);
 
-  /* ───── 圆角系统 ───── */
-  --radius-sm: 6px;
+  /* ───── 圆角系统 (终端偏方, 回退浅色用 8px) ───── */
+  --radius-sm: 4px;
   --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
   --radius-full: 9999px;
 
   /* ───── 过渡动画 ───── */
@@ -121,16 +132,15 @@
   --z-toast:    1060;
 }
 
-/* ============================================================
- * 暗色模式 (2026-07-31 P2-1) - 通过 html.dark 切换
- * Element Plus 自动跟随 (dark/css-vars.css)
- * 2026-08-04: 重构为深金融风(近黑蓝底 + 高对比数据)
- * ============================================================ */
+/* ════════════════════════════════════════════════════════════
+ * 管理端 · 暗色 = 深色金融终端 (admin 默认)
+ * 近黑蓝底 + 分层面板 + 信号色高对比 + 高密度数据
+ * ════════════════════════════════════════════════════════════ */
 html.dark {
-  --color-primary:        #60a5fa;
-  --color-primary-light:  #3b82f6;
-  --color-primary-lighter:#1e3a8a;
-  --color-primary-dark:   #93c5fd;
+  --color-primary:        #38bdf8;
+  --color-primary-light:  #7dd3fc;
+  --color-primary-lighter:#0c4a6e;
+  --color-primary-dark:   #0ea5e9;
 
   --color-success: #34d399;
   --color-success-light: #064e3b;
@@ -140,13 +150,15 @@ html.dark {
   --color-danger-light:  #7f1d1d;
   --color-info:    #818cf8;
   --color-info-light:    #312e81;
+  --color-teal:    #2dd4bf;
 
-  --color-up:      #f87171;
+  /* 涨跌: A股红涨绿跌, 终端亮色 */
+  --color-up:      #ff5f57;
   --color-up-bg:   #2a1212;
-  --color-down:    #34d399;
+  --color-down:    #2dd4bf;
   --color-down-bg: #0a2920;
 
-  /* 深金融风背景层级: 页面底近黑蓝, 卡片逐层提亮 */
+  /* 分层底: 页面近黑蓝, 面板逐层提亮 */
   --bg-page:    #070b14;
   --bg-card:    #0d1524;
   --bg-sidebar: #0a1120;
@@ -173,16 +185,116 @@ html.dark {
   --shadow-xl: 0 12px 36px rgba(0, 0, 0, 0.65);
 }
 
-/* 暗色模式微调: 强制关键元素 */
-html.dark body { background: var(--bg-page); color: var(--text-primary); }
-html.dark .page-card { background: var(--bg-card); border-color: var(--border-color); }
-html.dark .el-table { background: var(--bg-card); }
-html.dark .el-table th.el-table__cell { background: var(--bg-muted) !important; }
-html.dark .el-table tr { background: var(--bg-card) !important; color: var(--text-primary); }
-html.dark .el-input__wrapper { background: var(--bg-card); }
-html.dark .el-button { border-color: var(--border-color); }
-html.dark .el-dialog, html.dark .el-drawer, html.dark .el-card { background: var(--bg-card); }
-html.dark .el-popper.is-light, html.dark .el-popper.is-light .el-popper__arrow::before {
-  background: var(--bg-card);
-  border-color: var(--border-color);
+/* ════════════════════════════════════════════════════════════
+ * 训练端 · 浅色 = 道场 (默认)
+ * 暖白纸感 + 墨青主色 + 红涨绿跌 + 有温度的留白
+ * ════════════════════════════════════════════════════════════ */
+html[data-app="train"] {
+  /* 品牌色 — 墨青 (道场 / 玉石 / 克制感) */
+  --color-primary:        #0f766e;
+  --color-primary-light:  #14b8a6;
+  --color-primary-lighter:#ccfbf1;
+  --color-primary-dark:   #115e59;
+
+  /* 功能色 */
+  --color-success: #059669;
+  --color-success-light: #d1fae5;
+  --color-warning: #d97706;
+  --color-warning-light: #fef3c7;
+  --color-danger:  #e11d48;
+  --color-danger-light:  #ffe4e6;
+  --color-info:    #0f766e;
+  --color-info-light:    #ccfbf1;
+
+  /* A股红涨绿跌 (道场也遵循) */
+  --color-up:      #dc2626;
+  --color-up-bg:   #fef2f2;
+  --color-down:    #059669;
+  --color-down-bg: #ecfdf5;
+
+  /* 暖白纸感背景 */
+  --bg-page:    #faf8f4;
+  --bg-card:    #ffffff;
+  --bg-sidebar: #ffffff;
+  --bg-header:  #ffffff;
+  --bg-hover:   #f1ede6;
+  --bg-active:  #e6f5f2;
+  --bg-muted:   #f4f0ea;
+
+  /* 暖调文字 */
+  --text-primary:    #1c1a17;
+  --text-regular:    #3d3a35;
+  --text-secondary:  #6f6a63;
+  --text-placeholder:#a39d93;
+  --text-disabled:   #cfc9bf;
+  --text-inverse:    #ffffff;
+
+  /* 暖灰边框 */
+  --border-color:       #e8e2d8;
+  --border-color-light: #f0ebe3;
+  --border-color-dark:  #d6cfc2;
+
+  /* 道场阴影: 暖而柔 */
+  --shadow-xs: 0 1px 2px rgba(28, 26, 23, 0.04);
+  --shadow-sm: 0 2px 8px rgba(28, 26, 23, 0.06);
+  --shadow-md: 0 4px 16px rgba(28, 26, 23, 0.08);
+  --shadow-lg: 0 8px 28px rgba(28, 26, 23, 0.10);
+  --shadow-xl: 0 12px 40px rgba(28, 26, 23, 0.14);
+
+  /* 道场圆角: 更圆润温润 */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-full: 9999px;
+}
+
+/* ════════════════════════════════════════════════════════════
+ * 训练端 · 暗色 = 墨青夜
+ * ════════════════════════════════════════════════════════════ */
+html[data-app="train"].dark {
+  --color-primary:        #2dd4bf;
+  --color-primary-light:  #5eead4;
+  --color-primary-lighter:#134e4a;
+  --color-primary-dark:   #14b8a6;
+
+  --color-success: #34d399;
+  --color-success-light: #064e3b;
+  --color-warning: #fbbf24;
+  --color-warning-light: #78350f;
+  --color-danger:  #fb7185;
+  --color-danger-light:  #4c0519;
+  --color-info:    #2dd4bf;
+  --color-info-light:    #134e4a;
+
+  --color-up:      #f87171;
+  --color-up-bg:   #2a1212;
+  --color-down:    #34d399;
+  --color-down-bg: #0a2920;
+
+  /* 道场夜: 墨青黑底, 暖中带青 */
+  --bg-page:    #0d1312;
+  --bg-card:    #141c1a;
+  --bg-sidebar: #111816;
+  --bg-header:  #111816;
+  --bg-hover:   #1d2926;
+  --bg-active:  #134e4a;
+  --bg-muted:   #182321;
+
+  --text-primary:    #f0f4f3;
+  --text-regular:    #cdd8d5;
+  --text-secondary:  #8fa3a0;
+  --text-placeholder:#5c6f6c;
+  --text-disabled:   #3b4a47;
+  --text-inverse:    #0d1312;
+
+  --border-color:       #23312e;
+  --border-color-light: #1a2624;
+  --border-color-dark:  #35524d;
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-xl: 0 12px 36px rgba(0, 0, 0, 0.65);
 }
