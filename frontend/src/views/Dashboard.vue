@@ -30,6 +30,54 @@
       </el-col>
     </el-row>
 
+    <!-- 数据完整性卡片 -->
+    <el-row v-if="!loading || loaded" :gutter="16" style="margin-top:16px;">
+      <el-col :span="12">
+        <div class="page-card completeness-card">
+          <h3 class="page-title">数据完整性</h3>
+          <el-descriptions :column="2" border>
+            <el-descriptions-item label="K线覆盖">
+              <span class="cover-num">{{ formatNum(coverage.stocks_with_kline) }}</span>
+              / {{ formatNum(coverage.stock_total) }}
+              <el-tag size="small" :type="coverageTagType" style="margin-left:8px;">
+                {{ coverage.coverage_pct }}%
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="指数覆盖">
+              <span class="cover-num">{{ formatNum(tables.index_daily) }}</span> 条
+            </el-descriptions-item>
+            <el-descriptions-item label="K线更新到">
+              <span class="cover-num">{{ coverage.kline_latest_date || '-' }}</span>
+              <div class="cover-sub" v-if="coverage.kline_updated_at">
+                最后写入: {{ formatTime(coverage.kline_updated_at) }}
+              </div>
+            </el-descriptions-item>
+            <el-descriptions-item label="指数更新到">
+              <span class="cover-num">{{ coverage.index_latest_date || '-' }}</span>
+            </el-descriptions-item>
+          </el-descriptions>
+        </div>
+      </el-col>
+      <el-col :span="12">
+        <div class="page-card completeness-card">
+          <h3 class="page-title">最近成功更新</h3>
+          <div v-if="coverage.last_success_log" class="last-success">
+            <div class="last-success-row">
+              <el-tag size="small" type="success">{{ coverage.last_success_log.task_name }}</el-tag>
+              <span class="cover-num" style="margin-left:8px;">
+                {{ formatNum(coverage.last_success_log.affected_rows) }} 行
+              </span>
+            </div>
+            <div class="cover-sub" style="margin-top:8px;">
+              开始: {{ coverage.last_success_log.start_time }}<br/>
+              结束: {{ coverage.last_success_log.end_time }}
+            </div>
+          </div>
+          <el-empty v-else description="暂无成功更新记录" :image-size="60" />
+        </div>
+      </el-col>
+    </el-row>
+
     <!-- K线数据表 -->
     <div v-if="loading && !loaded" class="page-card">
       <div class="skeleton skeleton-title"></div>
@@ -102,10 +150,19 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { systemApi } from '@/api/modules'
 
-const status = ref({ tables: {}, kline_by_adjust: [], recent_logs: [] })
+const status = ref({ tables: {}, kline_by_adjust: [], recent_logs: [], coverage: {} })
 const loading = ref(false)
 const loaded = ref(false)
 const loadError = ref(false)
+
+const tables = computed(() => status.value.tables || {})
+const coverage = computed(() => status.value.coverage || {})
+const coverageTagType = computed(() => {
+  const pct = coverage.value.coverage_pct
+  if (pct >= 95) return 'success'
+  if (pct >= 80) return 'warning'
+  return 'danger'
+})
 
 const stats = computed(() => {
   const t = status.value.tables || {}
@@ -121,6 +178,11 @@ const stats = computed(() => {
 })
 
 function formatNum(v) { return Number(v || 0).toLocaleString() }
+function formatTime(v) {
+  if (!v) return '-'
+  const s = String(v).replace('T', ' ').slice(0, 19)
+  return s
+}
 
 async function load() {
   loading.value = true
@@ -151,5 +213,22 @@ onMounted(load)
 <style scoped>
 .empty-error {
   padding: 60px 0;
+}
+.completeness-card {
+  margin-bottom: 16px;
+}
+.cover-num {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+.cover-sub {
+  color: var(--text-placeholder);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.last-success-row {
+  display: flex;
+  align-items: center;
 }
 </style>

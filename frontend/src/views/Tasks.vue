@@ -4,7 +4,7 @@
       <h3 class="page-title">触发更新任务</h3>
       <el-alert type="info" :closable="false" show-icon style="margin-bottom:16px;">
         系统提供两类数据更新:<b>拉取数据</b>(首次/换源)和<b>增量同步</b>(日常)。
-        所有拉取任务会写到 <code>data/stock.db</code>,进度可在下方查看。
+        数据写入服务端数据库(PostgreSQL / SQLite),进度可在下方查看。
       </el-alert>
 
       <div class="task-actions">

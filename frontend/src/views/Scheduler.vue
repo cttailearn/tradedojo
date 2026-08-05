@@ -182,7 +182,7 @@
           <template #label><span><el-icon><VideoPlay /></el-icon>即时触发</span></template>
 
           <el-alert type="info" :closable="false" show-icon style="margin-bottom: 16px;">
-            仅两个入口:<b>拉取数据</b>(首次/换源)和<b>增量同步</b>(日常)。所有拉取任务会写到 <code>data/stock.db</code>。
+            仅两个入口:<b>拉取数据</b>(首次/换源)和<b>增量同步</b>(日常)。数据写入服务端数据库(PostgreSQL / SQLite)。
           </el-alert>
 
           <el-form :model="triggerForm" label-width="100px" style="max-width:640px;">
