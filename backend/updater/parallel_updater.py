@@ -214,11 +214,14 @@ class ParallelKlineUpdater:
         days_back: int = None,
         codes: list = None,
         since_list_date: bool = False,
+        progress_callback=None,
     ) -> dict:
         """
         并行更新所有股票 K线
         :param codes: 指定仅更新这些代码;为 None 时处理全部
         :param since_list_date: True 时按每只股票各自的 list_date 决定起始日(忽略 days_back)
+        :param progress_callback: 可选回调,按真实完成股票数上报进度:
+            progress_callback({total, completed, success, failed, empty, rows})
         :return: 统计字典
         """
         # days_back=0 保持原样(0 表示全量自上市以来),仅在 None 时回退默认值
@@ -318,6 +321,21 @@ class ParallelKlineUpdater:
                             f"成功 {s['success']} 失败 {s['failed']} "
                             f"空 {s['empty']} 写入 {s['rows']} 行"
                         )
+                    # 真实股票数进度上报(前端进度条依赖)
+                    if progress_callback and (done % 10 == 0 or done == len(todo)):
+                        with self.stats_lock:
+                            s = dict(self.stats)
+                        try:
+                            progress_callback({
+                                "total": len(todo),
+                                "completed": done,
+                                "success": s["success"],
+                                "failed": s["failed"],
+                                "empty": s["empty"],
+                                "rows": s["rows"],
+                            })
+                        except Exception as e:
+                            logger.debug(f"progress callback error: {e}")
         finally:
             # 5. 通知 Writer 结束
             self.stop_flag.set()
@@ -1063,10 +1081,12 @@ class ParallelKlineUpdater:
         days_back: int = 10,
         codes: list = None,
         since_list_date: bool = False,
+        progress_callback=None,
     ) -> dict:
         """仅对缺失/过期的股票更新日K线
         :param codes: 限定到这些代码;为 None 时处理所有缺失/过期
         :param since_list_date: 是否按 list_date 拉取单股历史
+        :param progress_callback: 透传给 update_all 的真实进度回调
         """
         report = self.check_missing()
         missing = report['kline_daily']['missing_stocks']
@@ -1097,4 +1117,5 @@ class ParallelKlineUpdater:
         return self.update_all(
             adjust=adjust, days_back=days_back, codes=codes,
             since_list_date=since_list_date,
+            progress_callback=progress_callback,
         )

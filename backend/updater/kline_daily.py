@@ -65,6 +65,7 @@ class KlineDailyUpdater(BaseUpdater):
                 adjust=p.adjust or "qfq", days_back=p.days_back,
                 codes=p.codes,
                 since_list_date=p.since_list_date,
+                progress_callback=progress_callback,
             )
         else:
             stats = u.update_all(
@@ -73,6 +74,7 @@ class KlineDailyUpdater(BaseUpdater):
                 only_active=p.only_active,
                 codes=p.codes,
                 since_list_date=p.since_list_date,
+                progress_callback=progress_callback,
             )
 
         result = {

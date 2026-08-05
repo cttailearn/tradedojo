@@ -36,6 +36,34 @@ def status():
         for r in kline_rows
     ]
 
+    # ---- 数据完整性指标(2026-08-05 新增) ----
+    stock_total = table_info.get("stock_list", 0)
+    stocks_with_kline = 0
+    kline_latest_date = None
+    kline_updated_at = None
+    index_latest_date = None
+    try:
+        row = query_one(
+            "SELECT COUNT(DISTINCT code) FROM kline_daily WHERE adjust_type = 'qfq'"
+        )
+        stocks_with_kline = int(row[0] or 0) if row else 0
+    except Exception:
+        pass
+    try:
+        row = query_one(
+            "SELECT MAX(trade_date), MAX(updated_at) FROM kline_daily"
+        )
+        if row:
+            kline_latest_date = row[0]
+            kline_updated_at = row[1]
+    except Exception:
+        pass
+    try:
+        row = query_one("SELECT MAX(trade_date) FROM index_daily")
+        index_latest_date = row[0] if row else None
+    except Exception:
+        pass
+
     logs = query_all(
         "SELECT id, task_name, status, affected_rows, start_time, end_time, message "
         "FROM update_log ORDER BY id DESC LIMIT 5"
@@ -49,9 +77,23 @@ def status():
         for r in logs
     ]
 
+    coverage = {
+        "stock_total": stock_total,
+        "stocks_with_kline": stocks_with_kline,
+        "coverage_pct": round(stocks_with_kline * 100 / stock_total, 1)
+        if stock_total else 0,
+        "kline_latest_date": kline_latest_date,
+        "kline_updated_at": kline_updated_at,
+        "index_latest_date": index_latest_date,
+        "last_success_log": next(
+            (r for r in recent_logs if r["status"] == "success"), None
+        ),
+    }
+
     return {
         "tables": table_info,
         "kline_by_adjust": kline_by_adjust,
+        "coverage": coverage,
         "recent_logs": recent_logs,
         "now": datetime.now().isoformat(timespec="seconds"),
     }

@@ -105,7 +105,7 @@ class FetchAllUpdater(BaseUpdater):
                 "days_back": p.days_back,
                 "workers": p.workers,
                 "since_list_date": is_full,
-            }).run()
+            }).run(progress_callback=progress_callback)
             result["stages"]["kline_daily"] = r3.get("stats", r3)
         except Exception as e:
             self.logger.warning(f"{self._log_prefix} kline_daily 失败: {e}")
@@ -202,7 +202,7 @@ class SyncLatestUpdater(BaseUpdater):
                 "only_active": p.only_active,
                 "codes": p.codes,
                 "since_list_date": p.since_list_date,
-            }).run()
+            }).run(progress_callback=progress_callback)
             result["stages"]["kline_daily"] = r2.get("stats", r2)
         except Exception as e:
             self.logger.warning(f"{self._log_prefix} kline_daily 失败: {e}")
