@@ -118,6 +118,7 @@ class BaostockFetcher(BaseFetcher):
 
     def __init__(self):
         self._logged_in = False
+        self._last_login_attempt = 0.0  # 登录冷却时间戳(monotonic)
 
     @property
     def source_name(self) -> str:
@@ -127,15 +128,32 @@ class BaostockFetcher(BaseFetcher):
     def requires_token(self) -> bool:
         return False
 
+    # 登录失败冷却(秒): baostock 不可达时避免每次查询都尝试重连
+    _LOGIN_COOLDOWN = 60.0
+
     def _ensure_login(self) -> bool:
-        """确保 baostock 已登录"""
+        """确保 baostock 已登录。
+
+        2026-08-12 加固:
+        - login 走 _BS_EXECUTOR 限时等待(socket 默认无超时, connect 到
+          不可达 IP 会挂很久; 库 send_msg 已加 recv 超时, 这里再兜底)。
+        - 失败后进入 60s 冷却, 避免查询风暴; 冷却期内直接返回 False,
+          让 FetcherManager 快速 failover 到其他数据源。
+        """
         global _BS_LOGGED_IN  # 函数内有赋值,需声明为模块级,否则报 UnboundLocalError
         if not _HAS_BAOSTOCK:
             return False
         if _BS_LOGGED_IN and self._logged_in:
             return True
+        # 冷却检查
+        now = time.monotonic()
+        if now - self._last_login_attempt < self._LOGIN_COOLDOWN:
+            return False
+        self._last_login_attempt = now
         try:
-            lg = bs.login()
+            # login 限时: 超过 _BS_QUERY_TIMEOUT 视为失败(含 connect/recv 挂起)
+            fut = _BS_EXECUTOR.submit(bs.login)
+            lg = fut.result(timeout=_BS_QUERY_TIMEOUT)
             if lg.error_code == "0":
                 _BS_LOGGED_IN = True
                 self._logged_in = True
@@ -144,16 +162,30 @@ class BaostockFetcher(BaseFetcher):
             logger.error(f"[Baostock] 登录失败: {lg.error_msg}")
             return False
         except Exception as e:
-            logger.error(f"[Baostock] 登录异常: {e}")
+            logger.warning(f"[Baostock] 登录异常/超时: {e}; 冷却 {self._LOGIN_COOLDOWN:.0f}s")
+            self._reset_login()
             return False
 
     def _reset_login(self) -> None:
-        """使登录态失效(会话断开/网络错误后调用, 下次查询会重新登录)"""
+        """使登录态失效(会话断开/网络错误后调用, 下次查询会重新登录)。
+
+        2026-08-12: 不再调用 bs.logout()。
+        logout 内部先 send_msg 再关 socket; baostock 服务器不可达时,
+        send_msg 即使有超时也占用 _BS_LOCK 数秒, 阻塞所有查询线程。
+        改为直接关闭底层 socket + 重置状态, 由下次 _ensure_login 重新建连。
+        """
         global _BS_LOGGED_IN
         with _BS_LOCK:
-            if _BS_LOGGED_IN and _HAS_BAOSTOCK:
+            if _HAS_BAOSTOCK:
                 try:
-                    bs.logout()
+                    import baostock.common.context as _bs_ctx
+                    sock = getattr(_bs_ctx, "default_socket", None)
+                    if sock is not None:
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
+                        setattr(_bs_ctx, "default_socket", None)
                 except Exception:
                     pass
             _BS_LOGGED_IN = False
@@ -226,8 +258,8 @@ class BaostockFetcher(BaseFetcher):
                                     and _result_empty(result)):
                                 last_err = "空结果(疑似连接异常静默)"
                                 logger.warning(
-                                    f"[Baostock] 首次查询空结果: 疑似连接异常, "
-                                    f"重置会话后重试"
+                                    "[Baostock] 首次查询空结果: 疑似连接异常, "
+                                    "重置会话后重试"
                                 )
                                 self._reset_login()
                                 need_retry = True

@@ -14,7 +14,6 @@ P0/P1 加固:
 import os
 import logging
 import sys
-import uuid
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -46,6 +45,7 @@ from app.routers import (
 
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from app.scheduler import scheduler_service
 
 logger = logging.getLogger("app")
 
@@ -58,6 +58,15 @@ def create_app() -> FastAPI:
         init_db(verbose=False)
         init_user_db()
         ensure_default_admin()
+        # ---- 启动定时调度(工作日 16:30 sync_latest 增量更新数据) ----
+        # 2026-08-12: 此前 scheduler_service 从未 start, 导致数据自动更新
+        # 从未生效(scheduler_job.last_run_at 恒为空)。现在随应用自启,
+        # cron 匹配到即触发对应 updater, 由 task_manager 后台执行。
+        try:
+            scheduler_service.start()
+            logger.info("[STARTUP] 定时调度已启动")
+        except Exception as e:
+            logger.warning(f"[STARTUP] 定时调度启动失败(不影响主服务): {e}")
         logger.info(
             "[STARTUP] 完成。前端目录: %s | SECRET_KEY is_dev=%s",
             settings.FRONTEND_DIR, settings.is_dev,
@@ -67,6 +76,10 @@ def create_app() -> FastAPI:
         finally:
             # ---- 关闭 ----
             logger.info("[SHUTDOWN] 关闭 ...")
+            try:
+                scheduler_service.stop()
+            except Exception:
+                pass
 
     app = FastAPI(
         title=settings.APP_NAME,

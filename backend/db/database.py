@@ -27,7 +27,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from starlette.exceptions import HTTPException
 
 from config import DB_PATH, USER_DB_PATH, PROJECT_ROOT, db_config
 
@@ -112,12 +111,10 @@ def _translate_sql(sql: str, has_params: bool) -> str:
     """把 SQLite 占位符 ? 翻译为 psycopg3 的 %s。
 
     已核验:业务 SQL 字符串字面量中不含 '?'(占位符生成代码除外)。
-    psycopg3 解析 %s 占位符时,查询文本里的字面量 '%' 必须写成 '%%',
-    否则抛 unsupported placeholder 错误;仅当有参数时 psycopg3 才会做
-    占位符解析,因此无参数时 '%' 保持原样(LIKE 'checkpoint_%' 等)。
+    psycopg3 只要收到非 None 的 params(包括空元组 ()) 就会解析 % 占位符,
+    因此查询文本里的字面量 '%' 必须一律写成 '%%'(无论是否有参数),
+    否则抛 unsupported placeholder 错误(LIKE '30%' 等场景)。
     """
-    if not has_params:
-        return sql.replace("?", "%s")
     return _PG_PARAM_RE.sub(lambda m: "%s" if m.group(0) == "?" else "%%", sql)
 
 
@@ -395,11 +392,13 @@ class CompatConnection:
     def executescript(self, script: str):
         if self._mode == "pg":
             # PG 不支持一次执行多条语句:拆分后逐条执行,跳过 PRAGMA
+            # 注意: schema_pg.sql 是原生 PG 语法(含 RAISE '...%...' 等),
+            # 不能走 _translate_sql(会把 % 转义成 %%),这里直接执行原句。
             for stmt in _split_sql_statements(script):
                 stmt = stmt.strip()
                 if not stmt or _is_pragma(stmt):
                     continue
-                self.execute(stmt)
+                self._conn.cursor().execute(stmt)
             return
         self._conn.executescript(script)
 
