@@ -9,6 +9,23 @@
       </p>
 
       <el-form :model="form" label-width="160px" label-position="right" v-loading="loadingOptions">
+        <el-divider content-position="left">K 线周期</el-divider>
+        <el-row :gutter="16">
+          <el-col :span="24">
+            <el-form-item label="周期">
+              <el-radio-group v-model="form.bar_period" size="default">
+                <el-radio-button :value="240">日线</el-radio-button>
+                <el-radio-button :value="60">60 分</el-radio-button>
+                <el-radio-button :value="30">30 分</el-radio-button>
+              </el-radio-group>
+              <span class="hint">
+                默认日线(现有行为)。选 30/60 分钟需先在管理端拉取分钟 K 线数据
+                (新浪接口约 1 年历史),否则会返回「没有符合条件的股票」。
+              </span>
+            </el-form-item>
+          </el-col>
+        </el-row>
+
         <el-divider content-position="left">时间窗</el-divider>
         <el-row :gutter="16">
           <el-col :span="12">
@@ -209,6 +226,8 @@ function todayLocal() {
 }
 
 const form = reactive({
+  // 周期选择: 240=日线(默认), 30=30分钟, 60=60分钟(sina数据源)
+  bar_period: 240,
   // 时间窗控制:由用户选择窗口长度,start_date 提交时再随机
   range_years: 1,
   start_date: '',   // 提交时随机生成(写入 session)
@@ -284,6 +303,7 @@ async function loadOptions() {
 
 function reset() {
   Object.assign(form, {
+    bar_period: 240,
     range_years: 1,
     end_date: todayLocal(),
     lookback_months: 6,
