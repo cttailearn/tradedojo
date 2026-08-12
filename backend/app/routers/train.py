@@ -7,9 +7,7 @@ K线交易训练 —— 业务主路由
 """
 import logging
 import random
-import sqlite3
-import math
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -18,10 +16,8 @@ from app.deps_train import get_current_train_user
 from app.models import (
     AdvanceRequest,
     TradeOrderRequest,
-    TrainingSessionInfo,
     TrainingSetupRequest,
 )
-from app.config import settings
 from app.rate_limit import limiter
 from app.utils import calc_session_cost
 from db.database import (
@@ -77,12 +73,11 @@ def _pick_random_stock(req: TrainingSetupRequest) -> dict:
     base_where_sql = ' AND '.join(where)
     # Step 1: 拉候选(只查 stock_list,带可见字段)—— 通常几千行,几乎瞬间
     if is_minute:
-        # 分钟模式: 直接把候选收敛到"该周期有分钟K线"的股票,
-        # 避免随机挑选 + 降级都落到无数据的股票导致 start 400。
+        # 分钟模式(2026-08-12): 候选收敛到"有日K线"的股票即可 ——
+        # 分钟K由日K确定性合成(_minute_bars 回退),不再依赖 kline_minute 表。
         base_where_sql += (
-            " AND s.code IN (SELECT DISTINCT code FROM kline_minute WHERE period = ?)"
+            " AND s.code IN (SELECT DISTINCT code FROM kline_daily WHERE adjust_type = 'qfq')"
         )
-        params.append(period)
     rows = stock_query_all(
         f"SELECT s.code, s.name, s.industry, s.market FROM stock_list s "
         f"WHERE {base_where_sql} ORDER BY s.code ASC",
@@ -93,15 +88,7 @@ def _pick_random_stock(req: TrainingSetupRequest) -> dict:
     random.shuffle(rows)
 
     def _has_enough_kline(code: str) -> bool:
-        if is_minute:
-            # 分钟模式: 只看候选区间内是否有分钟K线(≥1 根即可,后续 start 会取首根)
-            cnt = stock_query_one(
-                "SELECT COUNT(*) FROM kline_minute "
-                "WHERE code = ? AND period = ? "
-                "  AND trade_time >= ? AND trade_time <= ?",
-                (code, period, req.start_date, f"{req.end_date} 23:59:59"),
-            )
-            return bool(cnt and (cnt[0] or 0) > 0)
+        # 日K覆盖即满足(分钟模式由日K合成, 与日线共用同一判据)
         cnt = stock_query_one(
             "SELECT COUNT(*) FROM kline_daily "
             "WHERE code = ? AND adjust_type = 'qfq' "
@@ -159,21 +146,139 @@ def _session_period(sess: dict) -> int:
     return v
 
 
-def _kline_in_window(code: str, start_date: str, end_date: str, period: int = 240) -> list:
-    """读取某只股票在 [start, end] 区间的 K 线 (stock.db)。
+# =====================================================================
+# 合成分钟 K 线(2026-08-12)
+#
+# 背景: 分钟级训练依赖 kline_minute 真实数据, 但当前库中该表为空,
+# 且 sina 数据源不稳定、历史仅约 1 年。为让 30/60 分钟训练立即可用,
+# 增加"由日 K 确定性合成分钟 K"的能力(不落库, 训练期间内存生成)。
+#
+# 确定性原则: 同一 (code, period, trade_date) 每次都生成完全相同的
+# 分钟 bar —— 因为交易撮合/风控/展示都必须看到同一份数据。
+# seed = stable hash(code|period|trade_date)。
+# =====================================================================
 
-    2026-08-04 分钟级: period in (30, 60) 改查 kline_minute,
-    返回结构与日线同构(多带 trade_time 完整时间戳)。
+# 每个交易日的分钟 bar 数(A 股 4 小时)
+_MINUTE_BARS_PER_DAY = {30: 8, 60: 4}
+# 每个 bar 的起始时间(30 分: 09:30,10:00,10:30,11:00,13:00,13:30,14:00,14:30)
+# (60 分: 09:30,10:30,13:00,14:00) —— 与常见行情终端一致
+_MINUTE_TIMES = {
+    30: ["09:30", "10:00", "10:30", "11:00", "13:00", "13:30", "14:00", "14:30"],
+    60: ["09:30", "10:30", "13:00", "14:00"],
+}
+
+
+def _stable_seed(code: str, period: int, trade_date: str) -> int:
+    """生成稳定种子: 同 (code, period, date) → 同 seed, 保证可复现。"""
+    import hashlib
+    h = hashlib.sha256(f"{code}|{period}|{trade_date}".encode("utf-8")).digest()
+    return int.from_bytes(h[:8], "big")
+
+
+def _synthesize_minute_bars(daily: dict, period: int) -> list[dict]:
+    """由单根日 K 确定性合成一根交易日内的分钟 bar 列表。
+
+    daily: kline_daily 一行, 含 trade_date/open/high/low/close/volume/amount。
+    算法(简单、稳定):
+      - 价格: 从 open 出发按比例走向 close, 每根 bar 的 OHLC 在 [low, high] 内
+        用正态噪声扰动; 整日高低点恰好出现在某根 bar(保证 high/low 被覆盖)。
+      - 成交量: 按 U 型分布(开盘/收盘放量)分配日成交量。
+      - amount: 同比例分配(缺失则 None)。
+    返回: 与 _kline_in_window 分钟分支同构的 dict 列表。
     """
-    if period in (30, 60):
-        rows = stock_query_all(
-            """SELECT trade_time, open, high, low, close, volume, amount
-               FROM kline_minute
-               WHERE code = ? AND period = ?
-                 AND trade_time >= ? AND trade_time <= ?
-               ORDER BY trade_time ASC""",
-            (code, period, start_date, end_date),
-        )
+    import random as _rng
+    n = _MINUTE_BARS_PER_DAY[period]
+    times = _MINUTE_TIMES[period]
+    date = daily["trade_date"]
+    o, h, l, c = daily["open"], daily["high"], daily["low"], daily["close"]
+    vol = daily.get("volume") or 0
+    amt = daily.get("amount")
+
+    rng = _rng.Random(_stable_seed(daily["code"], period, date))
+
+    # 基础走向: open -> close 的线性插值
+    base = [o + (c - o) * (i / (n - 1)) for i in range(n)] if n > 1 else [o]
+    # 确定性噪声(幅度 ~ 日内振幅的 12%)
+    amp = max(float(h or 0) - float(l or 0), abs(float(c or 0) - float(o or 0)), 0.01)
+    noise = [rng.uniform(-0.12, 0.12) * amp for _ in range(n)]
+    prices = [base[i] + noise[i] for i in range(n)]
+    # 固定两端: 首 bar open=日 open, 末 bar close=日 close
+    prices[0] = float(o)
+    prices[-1] = float(c)
+    # 钳制到 [low, high]
+    prices = [max(float(l), min(float(h), p)) for p in prices]
+    # 保证高低点覆盖: 最低价给振幅最低的 bar, 最高价给振幅最高的 bar
+    lo_idx = min(range(n), key=lambda i: prices[i])
+    hi_idx = max(range(n), key=lambda i: prices[i])
+    prices[lo_idx] = float(l)
+    prices[hi_idx] = float(h)
+    # 两端仍保持 open/close
+    prices[0] = float(o)
+    prices[-1] = float(c)
+
+    # U 型成交量权重(30分 8 根 / 60分 4 根)
+    if n == 8:
+        w = [1.6, 1.2, 1.0, 0.9, 0.9, 1.0, 1.2, 1.6]
+    else:
+        w = [1.5, 0.9, 0.9, 1.5]
+    wsum = sum(w)
+
+    out = []
+    for i in range(n):
+        p = prices[i]
+        # 每根 bar 的 open/close: 中间 bar 用相邻价格, 首根 open=日open, 末根 close=日close
+        bar_open = float(o) if i == 0 else prices[i - 1]
+        bar_close = float(c) if i == n - 1 else prices[i]
+        # high/low: 围绕该 bar 价格加小幅噪声, 但不超过日 high/low
+        bh = min(float(h), max(bar_open, bar_close) + rng.uniform(0, 0.02) * amp)
+        bl = max(float(l), min(bar_open, bar_close) - rng.uniform(0, 0.02) * amp)
+        # 若该 bar 恰好是日高/日低, 保证覆盖
+        if i == hi_idx:
+            bh = float(h)
+        if i == lo_idx:
+            bl = float(l)
+        v = int(vol * w[i] / wsum) if vol else 0
+        out.append({
+            "trade_date": date,
+            "trade_time": f"{date} {times[i]}:00",
+            "open": round(bar_open, 4),
+            "high": round(bh, 4),
+            "low": round(bl, 4),
+            "close": round(bar_close, 4),
+            "volume": v,
+            "amount": round(amt * w[i] / wsum, 2) if amt is not None else None,
+            "pre_close": None,
+            "change_amount": 0,
+            "pct_change": 0,
+            "turnover_rate": None,
+        })
+    return out
+
+
+def _minute_bars(
+    code: str,
+    period: int,
+    start_dt: str,
+    end_dt: str,
+    order: str = "ASC",
+    limit: Optional[int] = None,
+) -> list[dict]:
+    """分钟 K 线统一访问层(30/60 分)。
+
+    优先读 kline_minute 真实数据; 无数据(表空/该股无分钟数据)时
+    回退到从 kline_daily 合成 —— 保证分钟训练在无真实分钟数据时也可用。
+
+    start_dt/end_dt: trade_time 的边界(如 "2026-07-01" 或 "2026-07-01 13:00:00")。
+    返回: [{trade_time, open, high, low, close, volume, amount, ...}] 升序。
+    """
+    rows = stock_query_all(
+        "SELECT trade_time, open, high, low, close, volume, amount "
+        "FROM kline_minute "
+        "WHERE code = ? AND period = ? AND trade_time >= ? AND trade_time <= ? "
+        "ORDER BY trade_time " + order + (f" LIMIT {int(limit)}" if limit else ""),
+        (code, period, start_dt, end_dt),
+    )
+    if rows:
         return [{
             "trade_date": r[0][:10], "trade_time": r[0],
             "open": r[1], "high": r[2], "low": r[3],
@@ -181,6 +286,48 @@ def _kline_in_window(code: str, start_date: str, end_date: str, period: int = 24
             "pre_close": None, "change_amount": 0, "pct_change": 0,
             "turnover_rate": None,
         } for r in rows]
+
+    # ---- 回退: 由日 K 合成 ----
+    # 找出 [start 日, end 日] 内的日 K(仅 qfq, 与日线训练一致)
+    start_day = start_dt[:10]
+    end_day = end_dt[:10]
+    daily_rows = stock_query_all(
+        "SELECT trade_date, open, high, low, close, volume, amount "
+        "FROM kline_daily "
+        "WHERE code = ? AND adjust_type = 'qfq' "
+        "  AND trade_date >= ? AND trade_date <= ? "
+        "ORDER BY trade_date ASC",
+        (code, start_day, end_day),
+    )
+    out = []
+    for r in daily_rows:
+        daily = {
+            "code": code, "trade_date": r[0], "open": r[1], "high": r[2],
+            "low": r[3], "close": r[4], "volume": r[5], "amount": r[6],
+        }
+        out.extend(_synthesize_minute_bars(daily, period))
+    # 按 trade_time 过滤边界(合成基于整日, 可能包含 start_dt 之前/end_dt 之后的时间)
+    out = [b for b in out if b["trade_time"] >= start_dt and b["trade_time"] <= end_dt]
+    if order == "DESC":
+        out.reverse()
+    if limit:
+        out = out[:limit]
+    return out
+
+
+def _kline_in_window(code: str, start_date: str, end_date: str, period: int = 240) -> list:
+    """读取某只股票在 [start, end] 区间的 K 线 (stock.db)。
+
+    2026-08-04 分钟级: period in (30, 60) 走 _minute_bars(优先真实
+    kline_minute, 无则从日 K 合成, 2026-08-12)。
+    返回结构与日线同构(多带 trade_time 完整时间戳)。
+    """
+    if period in (30, 60):
+        return _minute_bars(
+            code, period,
+            f"{start_date} 00:00:00",
+            f"{end_date} 23:59:59",
+        )
     rows = stock_query_all(
         """SELECT trade_date, open, high, low, close, pre_close,
                   change_amount, pct_change, volume, amount, turnover_rate
@@ -303,7 +450,7 @@ def _build_session_view(session: dict) -> dict:
     # 已揭示 K 线:
     #   - 从 session.start_date - lookback_months(历史回看)开始
     #   - 到 current_date(逐日推进揭示到这里)为止
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import datetime as _dt
     period = _session_period(session)
     is_minute = period in (30, 60)
     # 分钟模式:current_dt 用 reveal_time 精确到 bar;日线模式用 reveal_date
@@ -474,16 +621,18 @@ def _check_risk_rules(sess: dict, advance_dates: list, user_id: int, period: int
         return []
 
     # 拉 advance 期间的 bar, 找首个触发日
-    # 分钟模式查 kline_minute(trade_time IN);日线模式查 kline_daily(trade_date IN)。
-    placeholders = ",".join("?" * len(advance_dates))
+    # 分钟模式用 _minute_bars(真实数据优先, 无则日K合成);日线模式查 kline_daily。
     if period in (30, 60):
-        bars = stock_query_all(
-            f"SELECT trade_time, open, high, low, close FROM kline_minute "
-            f"WHERE code = ? AND period = ? AND trade_time IN ({placeholders}) "
-            f"ORDER BY trade_time ASC",
-            (code, period, *advance_dates),
-        )
+        if advance_dates:
+            bars = [
+                (b["trade_time"], b["open"], b["high"], b["low"], b["close"])
+                for b in _minute_bars(code, period, advance_dates[0], advance_dates[-1])
+                if b["trade_time"] in set(advance_dates)
+            ]
+        else:
+            bars = []
     else:
+        placeholders = ",".join("?" * len(advance_dates))
         bars = stock_query_all(
             f"SELECT trade_date, open, high, low, close FROM kline_daily "
             f"WHERE code = ? AND adjust_type = 'qfq' AND trade_date IN ({placeholders}) "
@@ -632,16 +781,16 @@ def _process_pending_orders(sess: dict, advance_dates: list, user_id: int) -> di
     period = _session_period(sess)
     is_minute = period in (30, 60)
     # 拉 advance 期间的所有 bar (含 high/low/open/close)
+    # 分钟模式用 _minute_bars(真实数据优先, 无则日K合成);日线用 kline_daily。
     if advance_dates:
-        placeholders = ",".join("?" * len(advance_dates))
         if is_minute:
-            bars = stock_query_all(
-                f"SELECT trade_time, open, high, low, close FROM kline_minute "
-                f"WHERE code = ? AND period = ? AND trade_time IN ({placeholders}) "
-                f"ORDER BY trade_time ASC",
-                (code, period, *advance_dates),
-            )
+            bars = [
+                (b["trade_time"], b["open"], b["high"], b["low"], b["close"])
+                for b in _minute_bars(code, period, advance_dates[0], advance_dates[-1])
+                if b["trade_time"] in set(advance_dates)
+            ]
         else:
+            placeholders = ",".join("?" * len(advance_dates))
             bars = stock_query_all(
                 f"SELECT trade_date, open, high, low, close FROM kline_daily "
                 f"WHERE code = ? AND adjust_type = 'qfq' "
@@ -947,24 +1096,21 @@ def start_session(req: TrainingSetupRequest, request: Request, response: Respons
             # 自动顺延到该股票的下个实际交易日,否则前端会拿到空 K 线图
             # 注意:用户会话在 user_tx 内,但 kline_daily/kline_minute 在 stock.db,必须单独查
             if is_minute:
-                # 分钟模式: 首根 bar(trade_time) >= start_date 作为初始揭示。
-                # 先做数据覆盖校验: code+period 在 [start_date, end_date] 内无数据 → 400。
-                cov = stock_query_one(
-                    "SELECT COUNT(*) FROM kline_minute " 
-                    "WHERE code = ? AND period = ? AND trade_time >= ? AND trade_time <= ?",
-                    (stock["code"], period, req.start_date, f"{req.end_date} 23:59:59"),
+                # 分钟模式(2026-08-12): 分钟K由日K合成, 覆盖校验改为日线;
+                # 首根 bar(trade_time) >= start_date 作为初始揭示。
+                dcov = stock_query_one(
+                    "SELECT COUNT(*) FROM kline_daily "
+                    "WHERE code = ? AND adjust_type = 'qfq' "
+                    "  AND trade_date >= ? AND trade_date <= ?",
+                    (stock["code"], req.start_date, req.end_date),
                 )
-                if not cov or (cov[0] or 0) == 0:
+                if not dcov or (dcov[0] or 0) == 0:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"该股票在所选区间无 {period}分钟K线数据,请调整训练日期",
+                        detail=f"该股票在所选区间无日K线数据,无法合成 {period}分钟K线,请调整训练日期",
                     )
-                mrow = stock_query_one(
-                    "SELECT MIN(trade_time) FROM kline_minute "
-                    "WHERE code = ? AND period = ? AND trade_time >= ?",
-                    (stock["code"], period, req.start_date),
-                )
-                current_dt = (mrow[0] if mrow and mrow[0] else req.start_date)
+                mbar = _minute_bars(stock["code"], period, f"{req.start_date} 00:00:00", f"{req.end_date} 23:59:59")
+                current_dt = mbar[0]["trade_time"] if mbar else req.start_date
                 reveal_date_val = current_dt[:10]
                 reveal_time_val = current_dt
             else:
@@ -1490,16 +1636,17 @@ def advance(session_id: int, req: AdvanceRequest, request: Request, response: Re
         # 推进 bar 数: req.bars 优先, 否则按 days 换算 (旧前端只传 days)
         n_bars = req.bars if req.bars is not None else req.days * (16 if period == 30 else 8)
         cur_reveal = sess.get("reveal_time") or sess["reveal_date"] or sess["start_date"]
-        mrows = stock_query_all(
-            "SELECT trade_time FROM kline_minute "
-            "WHERE code = ? AND period = ? AND trade_time > ? AND trade_time <= ? "
-            "ORDER BY trade_time ASC LIMIT ?",
-            (sess["code"], period, cur_reveal, f"{sess['end_date']} 23:59:59", n_bars),
+        mrows = _minute_bars(
+            sess["code"], period,
+            cur_reveal, f"{sess['end_date']} 23:59:59",
+            limit=n_bars,
         )
+        # 排除 == cur_reveal 本身(推进要求 > cur_reveal)
+        mrows = [b for b in mrows if b["trade_time"] > cur_reveal]
         if not mrows:
             raise HTTPException(status_code=400, detail="已到达训练终点")
-        new_current = mrows[-1][0]
-        advance_dates = [r[0] for r in mrows]
+        new_current = mrows[-1]["trade_time"]
+        advance_dates = [b["trade_time"] for b in mrows]
         execute(
             "UPDATE training_session SET reveal_time = ?, reveal_date = ?, "
             "updated_at = datetime('now','localtime') WHERE id = ?",
@@ -1547,13 +1694,11 @@ def advance(session_id: int, req: AdvanceRequest, request: Request, response: Re
         code_list = [c[0] for c in pos_codes]
         close_map = {}   # code -> { key(trade_time or trade_date) -> close }
         if is_minute:
-            for r in stock_query_all(
-                f"SELECT code, trade_time, close FROM kline_minute "
-                f"WHERE code IN ({','.join('?'*len(code_list))}) AND period = ? "
-                f"  AND trade_time IN ({','.join('?'*len(advance_dates))})",
-                tuple(code_list) + (period,) + tuple(advance_dates),
-            ):
-                close_map.setdefault(r[0], {})[r[1]] = r[2]
+            want = set(advance_dates)
+            for c in code_list:
+                for b in _minute_bars(c, period, advance_dates[0], advance_dates[-1]):
+                    if b["trade_time"] in want:
+                        close_map.setdefault(c, {})[b["trade_time"]] = b["close"]
         else:
             for r in stock_query_all(
                 f"SELECT code, trade_date, close FROM kline_daily "
@@ -1785,11 +1930,14 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
         current_dt = sess["reveal_date"] or sess["start_date"]
     # 撮合价取<current_dt 及之后>的第一根 bar(若 reveal 是节假日/停牌则下一根)
     if is_minute:
-        bar_row = stock_query_one(
-            "SELECT trade_time, open, high, low, close FROM kline_minute "
-            "WHERE code = ? AND period = ? AND trade_time >= ? "
-            "ORDER BY trade_time ASC LIMIT 1",
-            (sess["code"], period, current_dt),
+        mbars = _minute_bars(
+            sess["code"], period,
+            current_dt, f"{sess['end_date']} 23:59:59",
+        )
+        bar_row = (
+            (mbars[0]["trade_time"], mbars[0]["open"], mbars[0]["high"],
+             mbars[0]["low"], mbars[0]["close"])
+            if mbars else None
         )
     else:
         bar_row = stock_query_one(
@@ -1807,12 +1955,15 @@ def trade(session_id: int, req: TradeOrderRequest, request: Request, response: R
     # 创业板(30x)/科创板(688) 限 ±20%, ST 股限 ±5%, 其他 ±10%
     # 2026-08-04 分钟级: 分钟模式昨收用"前一根分钟 bar close", 无则 fallback kline_daily 前一日
     if is_minute:
-        pre_min_row = stock_query_one(
-            "SELECT close FROM kline_minute "
-            "WHERE code = ? AND period = ? AND trade_time < ? "
-            "ORDER BY trade_time DESC LIMIT 1",
-            (sess["code"], period, bar_row[0]),
-        )
+        pmin = [
+            b for b in _minute_bars(
+                sess["code"], period,
+                sess["start_date"], f"{bar_row[0]} 23:59:59",
+                order="DESC",
+            )
+            if b["trade_time"] < bar_row[0]  # 严格取当前 bar 之前的一根
+        ]
+        pre_min_row = (pmin[0]["close"],) if pmin else None
         if pre_min_row and pre_min_row[0]:
             pre_close = float(pre_min_row[0])
         else:
