@@ -350,13 +350,18 @@ def _kline_in_window(code: str, start_date: str, end_date: str, period: int = 24
 # ALTER TABLE ADD COLUMN 追加在末尾(auto_stop_* 后),而非 schema.sql 的
 # 全新建表顺序。日线回归:created_at/updated_at/auto_stop_* 均按该顺序对齐。
 SESSION_COLS = (
+    # 与 PG training_session 实际列序一致(2026-08-12 修正):
+    # auto_stop_loss_pct/auto_take_profit_pct 位于 created_at/updated_at 之前,
+    # 此前顺序颠倒导致 dict(zip(SESSION_COLS, row)) 字段错位,
+    # 使 _check_risk_rules 的 float(auto_stop_loss_pct) 拿到时间戳而崩溃。
     "id", "user_id", "code", "name", "industry", "market",
     "start_date", "end_date", "lookback_months", "initial_cash",
     "commission_rate", "min_commission", "stamp_tax", "transfer_fee",
     "allow_split", "max_positions", "per_trade_amount", "allow_chinext",
     "allow_st", "allow_kcb", "allow_bj", "total_fee_paid", "status",
-    "reveal_date", "created_at", "updated_at",
+    "reveal_date",
     "auto_stop_loss_pct", "auto_take_profit_pct",
+    "created_at", "updated_at",
     "bar_period", "reveal_time",
 )
 
